@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bom}
+      POSTGRES_USER: ${POSTGRES_USER:-bom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      # DOCKER_DATABASE_URL (in .env) points the backend at another PostgreSQL server, e.g. the one on the
+      # host machine: postgresql+psycopg://USER:PASSWORD@host.docker.internal:5432/DBNAME (URL-encode the password)
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-bom}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-spir_bom_tool}}
+      NUMBERING_SCOPE: ${NUMBERING_SCOPE:-plant}
+      EQUIPMENT_START: ${EQUIPMENT_START:-40001}
+      SPARE_START: ${SPARE_START:-500001}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      # edit plants.json on the server and restart the backend to change the dropdown
+      - ./backend/app/resources/plants.json:/app/app/resources/plants.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

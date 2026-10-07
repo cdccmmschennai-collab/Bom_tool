@@ -1,0 +1,138 @@
+/* Sign-in screen: industrial photo with a slow zoom in / out, navy overlay, centred card. */
+.login {
+  --login-navy: #0b1a3a;
+  --login-ink: #172238;
+  --login-gray: #6b7385;
+  --login-line: #d5d9e2;
+  --login-brand: #8e2a7e;
+  --login-brand-hover: #7a2369;
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+  color: #fff;
+  background: var(--login-navy);
+}
+
+.login__bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  animation: login-zoom 28s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes login-zoom {
+  from { transform: scale(1); }
+  to   { transform: scale(1.15); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login__bg { animation: none; }
+}
+
+.login__overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(9, 22, 52, 0.78) 0%, rgba(7, 18, 44, 0.86) 100%);
+}
+
+.login__center {
+  position: relative;
+  width: 100%;
+  max-width: 330px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ---- brand */
+.login__brand { text-align: center; margin-bottom: 22px; }
+.login__logo {
+  width: 68px; height: 68px; margin: 0 auto 14px;
+  display: grid; place-items: center;
+  background: #fff; border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+.login__logo img { width: 54px; height: 54px; object-fit: contain; }
+.login__title {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.9rem; font-weight: 700; letter-spacing: 0.04em;
+}
+.login__subtitle {
+  margin: 6px 0 0;
+  font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* ---- card */
+.login__card {
+  width: 100%;
+  padding: 26px 24px 24px;
+  background: #fbfbfd;
+  color: var(--login-ink);
+  border-radius: 15px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+.login__card h2 { margin: 0; font-size: 1.3rem; font-weight: 700; color: var(--login-ink); letter-spacing: 0; }
+.login__hint { margin: 4px 0 20px; font-size: 0.85rem; color: var(--login-gray); }
+
+.login__field { display: block; margin-bottom: 14px; }
+.login__field > span { display: block; margin-bottom: 6px; font-size: 0.78rem; font-weight: 600; color: #3b4458; }
+.login__field input {
+  width: 100%; height: 46px; padding: 0 14px;
+  font: inherit; font-size: 0.92rem; color: var(--login-ink);
+  background: #fff; border: 1px solid var(--login-line); border-radius: 8px;
+}
+.login__field input:focus {
+  outline: none; border-color: var(--login-brand);
+  box-shadow: 0 0 0 3px rgba(142, 42, 126, 0.15);
+}
+
+.login__password { position: relative; }
+.login__password input { padding-right: 46px; }
+.login__eye {
+  position: absolute; top: 0; right: 0; width: 44px; height: 46px;
+  display: grid; place-items: center;
+  padding: 0; background: none; border: 0; border-radius: 0 8px 8px 0; color: var(--login-gray); cursor: pointer;
+}
+.login__eye:hover { color: var(--login-ink); }
+.login__eye:focus-visible { outline: 2px solid var(--login-brand); outline-offset: -2px; }
+
+.login__remember {
+  display: flex; align-items: center; gap: 8px;
+  margin: 2px 0 18px; font-size: 0.82rem; color: var(--login-gray); cursor: pointer;
+}
+.login__remember input { width: 15px; height: 15px; margin: 0; accent-color: var(--login-brand); }
+
+.login__error {
+  margin: -6px 0 14px; padding: 9px 12px;
+  font-size: 0.82rem; color: #9b1c1c; background: #fdecec; border-radius: 7px;
+}
+
+.login__submit {
+  width: 100%; height: 45px; padding: 0 16px;
+  font: inherit; font-size: 0.95rem; font-weight: 600; color: #fff;
+  background: var(--login-brand); border: 0; border-radius: 8px; cursor: pointer;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.login__submit:hover:not(:disabled) { background: var(--login-brand-hover); box-shadow: 0 4px 14px rgba(142, 42, 126, 0.35); }
+.login__submit:focus-visible { outline: 2px solid var(--login-brand); outline-offset: 2px; }
+.login__submit:disabled { opacity: 0.7; cursor: progress; }
+
+/* ---- footer */
+.login__footer {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 22px;
+  margin-top: 22px; font-size: 0.75rem; color: rgba(255, 255, 255, 0.7);
+}
+
+@media (max-width: 380px) {
+  .login { padding: 24px 16px; }
+  .login__card { padding: 22px 18px 20px; }
+  .login__title { font-size: 1.65rem; }
+}

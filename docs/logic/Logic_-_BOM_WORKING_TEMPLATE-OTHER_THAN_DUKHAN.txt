@@ -1,0 +1,74 @@
+Logic:
+
+BOM WORKING TEMPLATE-Other than DUKHAN plant 
+
+
+SERIAL NUMBER : LIKE 1,2,3, USUAL
+
+MATERIAL TEMP NUMBER: if the "SAP NUMBER" Available put that value in this column other wise apple this logic For equipment start with 40000 (5digit number), spare start with 500000 (6 digit number)
+
+MATERIAL TYPEVCATEGORY: For Equipment-B, Spare-L
+
+EXTERNAL NUMBER ASSIGNED FOR ASSEMBLY: Leave it empty
+
+OLD MATERIAL NUMBER/SPF NUMBER: Refer input file "OLD MATERIAL NUMBER/SPF NUMBER" Column
+
+LEN(OLD MAT/SPF NUMBER = 18): length of "OLD MATERIAL NUMBER/SPF NUMBER" column in output file
+
+MATERIAL DESCRIPTION: REFER INPUT FILE "NEW DESCRIPTION OF PARTS" COLUMN
+
+LEN(MAT.DESC = 40): length of "MATERIAL DESCRIPTION" column in output file
+
+MAINTENANCE PLANNING PLANT: In dropdown they choose it, if the user cannot choose leave it empty
+
+BASE UNIT OF MEASURE(T006): Refer input file "UNIT OF MEASURE" Column 
+
+MANUFACTURERS PART NUMBER: Please refer to the “MANUFACTURER PART NUMBER” column. If the part number is 35 characters or longer, move the full value to the “CDC_ADD INFORMATION” column and retain a shortened part number in the “MANUFACTURER PART NUMBER” column. If the part number is 35 characters or fewer, keep the complete value in the “MANUFACTURERS PART NUMBER” column.
+
+LEN(MFR PART NUMBER = 18): length of "MANUFACTURERS PART NUMBER" column in output file
+
+MANUFACTURER NAME: Refer input file "SUPPLIER/ OCM NAME" Column 
+
+LEN(MANUFACTURER=30): length of "MANUFACTURER NAME" column in output file
+ 
+SAFETY STOCK:Leave it empty
+
+CRITICALITY (EQUIPMENT): Leave it empty
+ 
+MATERIAL IS AN EQUIPMENT INDICATOR: for equipment- "YES", spare- "NO"
+
+BOM HEADER  NUMBER : put equipment header number for that equipment and spare
+
+QUANTITY : in input file merge both column "EQPT QTY, QUANTITY IDENTICAL PARTS FITTED" in one column
+
+POSITION NUMBER: Refer input file "POSITION NUMBER" Column 
+
+CDC_SPIR NUMBER: Please refer to the “SPIR NO” column in the input file. If the value contains a revision suffix, such as “VEN-4391-M3TY-2-43-0003-REV-A”, capture only the base SPIR number “VEN-4391-M3TY-2-43-0003” in the output file. Do not include any revision information (e.g., “-REV-A”).
+
+DELIVERY TIME IN WEEKS: Refer input file "DELIVERY TIME IN WEEKS" Column
+
+MANUFACTURER COUNTRY CODE:1st Refer input file "VENDOR COUNTRY" Column, then refer a attached referece file for a vendor country code
+
+MM REQUIREMENT MATERIAL TYPE: Leave it empty
+
+MM REQUIREMENT MATERIAL GROUP: Leave it empty
+
+MM REQUIREMENT MOVING AVERAGE PRICE: Refer input file "UNIT PRICE (QAR)" Column 
+
+PO TEXT: Leave it empty
+
+CDC_ADD INFORMATION: the logic in "MANUFACTURERS PART NUMBER" if the part number is larger than length 35 put the value in this column.
+
+CDC_SAP CODE REMARKS: Leave it empty
+
+REORDER POINT (MINIMUM QTY): refer to the “MIN MAX STOCK LVLS QTY” column in the input file. If the column contains only a single value like "1 or 0", keep that value only in the “REORDER POINT (MINIMUM QTY)” column in the output file
+
+MAXIMUM STOCK LEVEL(MAX QTY): refer to the “MIN MAX STOCK LVLS QTY” column in the input file. If the column contains more than a single value like "12 or 120", keep that value only in the “MAXIMUM STOCK LEVEL(MAX QTY)” column in the output file.
+
+ASSEMBLY: leave it empty
+
+MANUFACTURER COUNTRY NAME: Refer input file "Vendor Country" column
+
+CURRENCY CODE REF: Refer input file "CURRENCY" column
+
+Leave the below columns are empty "PRD NAME,PRD DATE DD-MM-YYYY,SELF QC,LEAD QC  NAME,LEAD QC DATE DD-MM-YYYY,TEAM LEAD QC"

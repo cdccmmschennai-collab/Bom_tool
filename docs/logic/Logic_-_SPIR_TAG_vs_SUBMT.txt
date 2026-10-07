@@ -1,0 +1,23 @@
+Logic:
+
+For sheet : "SPIR TAG vs SUBMT "
+
+EQFNR: refer input file "Tag number" column
+
+SUBMT: Refer ouput file sheet "BOM WORKING TEMPLATE", "Material Temp Number" column
+
+SPIR NO: Refer to the “SPIR NO” column in the input file. If the value contains a revision suffix, such as “VEN-4391-M3TY-2-43-0003-REV-A”, capture only the base SPIR number “VEN-4391-M3TY-2-43-0003” in the output file. Do not include any revision information (e.g., “-REV-A”).
+
+REV : Refer to the “SPIR NO” column in the input file. If the value contains a revision prefix, such as “VEN-4391-M3TY-2-43-0003-REV-A”, capture only the base Revision (REV) “A” in the output file. Do not include any revision information (e.g., “VEN-4391-M3TY-2-43-0003-REV-”).
+
+HERST: refer input file "SUPPLIER/ OCM NAME" column
+
+TYPBZ: Refer input file "EQPT MODEL" column
+
+MAPAR: Refer input file "MANUFACTURER PART NUMBER" column
+
+SERGE: Refer input file "EQPT SR NO" column
+
+SPIR TYPE: Refer input file "SPIR TYPE" column
+
+REMARKS: Leave it empty

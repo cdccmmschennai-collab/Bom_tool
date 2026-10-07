@@ -1,0 +1,11 @@
+[
+  { "plant_type": "OTHER",  "code": "2600", "name": "Ras Laffan Offshore Fields" },
+  { "plant_type": "DUKHAN", "code": "2300", "name": "Dukhan Fields" },
+  { "plant_type": "OTHER",  "code": "2500", "name": "Refinery Mesaieed" },
+  { "plant_type": "OTHER",  "code": "1200", "name": "Qatar Petroleum - Doha" },
+  { "plant_type": "OTHER",  "code": "2800", "name": "Mesaieed Industrial City" },
+  { "plant_type": "OTHER",  "code": "2900", "name": "North Field Alpha" },
+  { "plant_type": "OTHER",  "code": "2400", "name": "NGL Mesaieed" },
+  { "plant_type": "OTHER",  "code": "2700", "name": "Ras Laffan Industrial City" },
+  { "plant_type": "OTHER",  "code": "3000", "name": "RL Cooling Water Systems" }
+]
