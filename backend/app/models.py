@@ -16,7 +16,7 @@ material_master_import - the material master list (one row per issued temp numbe
 from datetime import datetime
 
 from sqlalchemy import (BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, LargeBinary, Numeric,
-                        String, Table, UniqueConstraint, func)
+                        String, Table, Text, UniqueConstraint, func)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -60,7 +60,8 @@ class MaterialNumber(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scope: Mapped[str] = mapped_column(String(30))
     kind: Mapped[str] = mapped_column(String(10))
-    item_key: Mapped[str] = mapped_column(String(300))  # tag no for equipment, SAP/SPF no for spares
+    # PN:<part number> (scope "ALL", every plant), else TAG:<tag> for equipment / SAP:, SPF:, DESC: for spares
+    item_key: Mapped[str] = mapped_column(String(300))
     temp_number: Mapped[int] = mapped_column(BigInteger)
     first_job_id: Mapped[int | None] = mapped_column(ForeignKey("conversion_jobs.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -134,18 +135,29 @@ class ExtractedLine(Base):
     job_id: Mapped[int] = mapped_column(ForeignKey("conversion_jobs.id", ondelete="CASCADE"), index=True)
     serial: Mapped[int] = mapped_column(Integer)
     category: Mapped[str | None] = mapped_column(String(20), nullable=True)          # B = equipment, L = spare
-    tag: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tag: Mapped[str | None] = mapped_column(Text, nullable=True)
     sap_material_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     temp_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    old_material_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    old_material_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     planning_plant: Mapped[str | None] = mapped_column(String(50), nullable=True)
     uom: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    mfr_part_number: Mapped[str | None] = mapped_column(String(255), nullable=True)  # full value
-    mfr_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mfr_part_number: Mapped[str | None] = mapped_column(Text, nullable=True)  # full value
+    mfr_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     country_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    spir_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    spir_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     quantity: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+class OneTimeTask(Base):
+    """A maintenance task that must never run twice (e.g. the tester's initial cleanup). The row is the proof
+    it ran: it is claimed in the same transaction as the task's work, so a restart cannot repeat it."""
+    __tablename__ = "one_time_tasks"
+
+    name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    done_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    done_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
 
 class CombineTask(Base):
     """One "Combine" request from the History page. Progress lives in the database (not in memory)

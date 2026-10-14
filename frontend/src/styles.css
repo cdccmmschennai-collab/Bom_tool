@@ -584,3 +584,20 @@ td.file { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-spa
 }
 @keyframes nav-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .nav__running { animation: none; } }
+
+/* ---- Generate button while a conversion runs: label + bar (real % when known, sliding bar when not) */
+.primary.is-busy:disabled { background: var(--accent); color: var(--accent-ink); cursor: progress; }
+.btn-progress { display: inline-flex; flex-direction: column; gap: 6px; min-width: 200px; }
+.btn-progress__track {
+  position: relative; height: 4px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--accent-ink) 30%, transparent);
+}
+.btn-progress__bar {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 0;
+  border-radius: inherit; background: var(--accent-ink); transition: width 0.3s ease;
+}
+.btn-progress__track--indeterminate .btn-progress__bar { width: 35%; animation: btn-progress-slide 1.2s ease-in-out infinite; }
+@keyframes btn-progress-slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) {
+  .btn-progress__track--indeterminate .btn-progress__bar { animation: none; width: 100%; opacity: 0.6; }
+}

@@ -7,19 +7,19 @@ SERIAL NUMBER : LIKE 1,2,3, USUAL
 
 SAP MATERIAL NUMBER : REFER INPUT FILE "SAP NUMBER" COLUMN
 
-MATERIAL TEMP NUMBER: For equipment start with 40000 (5digit number), spare start with 500000 (6 digit number)
+MATERIAL TEMP NUMBER: if the "SAP NUMBER" Available put that value in this column, otherwise For equipment start with 40000 (5digit number), spare start with 500000 (6 digit number) Same MANUFACTURER PART NUMBER (equipment or spare) = same number in every plant; equipment without a part number keeps one number per TAG NO. Equipment and spares never share a number.
 
-MATERIAL TYPEVCATEGORY: For Equipment-B, Spare-L
+MATERIAL TYPEVCATEGORY: For Equipment-B, Spare-L; a Spare whose "SAP NUMBER" starts with 3 or 8 - N (also when the row has no SAP NUMBER but its MATERIAL TEMP NUMBER is a SAP number reused from the material master). Same value in the Working and Submission templates.
 
 EXTERNAL NUMBER ASSIGNED FOR ASSEMBLY: Leave it empty
 
 MESC/SPF_REF: Leave it empty
 
-OLD MATERIAL NUMBER/SPF NUMBER: Refer input file "OLD MATERIAL NUMBER/SPF NUMBER" Column
+OLD MATERIAL NUMBER/SPF NUMBER: Equipment (B) - "QEQU-" + its MATERIAL TEMP NUMBER (e.g. QEQU-40772). Spares (L) - Refer input file "OLD MATERIAL NUMBER/SPF NUMBER" Column
 
 LEN(OLD MAT/SPF NUMBER = 18): length of "OLD MATERIAL NUMBER/SPF NUMBER" column in output file
 
-MATERIAL DESCRIPTION: REFER INPUT FILE "NEW DESCRIPTION OF PARTS" COLUMN
+MATERIAL DESCRIPTION: Spare - if BOTH its MATERIAL TEMP NUMBER and its OLD MATERIAL NUMBER/SPF NUMBER (exact text) match a Material Master record, that record's Material Description (Working and Submission templates); otherwise, and for Equipment, REFER INPUT FILE "NEW DESCRIPTION OF PARTS" COLUMN
 
 LEN(MAT.DESC = 40): length of "MATERIAL DESCRIPTION" column in output file
 

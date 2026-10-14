@@ -75,25 +75,28 @@ def test_convert_and_numbers_continue(client, sample_bytes):
     assert job["spir_numbers"] == ["VEN-4391-M3TY-2-43-0003"]
     assert job["output_filename"].startswith("BOM_WORKING_TEMPLATE_DUKHAN_")
     ws = output_sheet(client, job["id"])
-    assert ws["C6"].value == 40001 and ws["C7"].value == 500001
+    assert ws["C6"].value == 40001 and ws["C7"].value == 10231307  # spare with a SAP number: the SAP number
     assert ws["K6"].value == dk["code"] and ws["Y7"].value == "QA"
 
     # same file again -> same items keep the same numbers
     job2 = upload(client, sample_bytes, "DUKHAN", dk["id"]).json()
     ws2 = output_sheet(client, job2["id"])
-    assert ws2["C6"].value == 40001 and ws2["C7"].value == 500001
+    assert ws2["C6"].value == 40001 and ws2["C7"].value == 10231307
 
     # a NEW tag in the same plant continues the sequence (40005, not 40001)
     wb = openpyxl.load_workbook(io.BytesIO(sample_bytes))
     for row in wb.active.iter_rows(min_row=4):
         if row[2].value == "34-QD-23":
             row[2].value = "NEW-TAG-01"
-        if row[23].value == "10231307":  # a new part number -> a new spare number
+        if row[23].value == "10231307":  # a new part number without SAP number -> a new spare number
             row[14].value = "NEW-PART-01"
+            row[23].value = None
     buf = io.BytesIO()
     wb.save(buf)
     ws3 = output_sheet(client, upload(client, buf.getvalue(), "DUKHAN", dk["id"]).json()["id"])
-    assert ws3["C6"].value == 40005 and ws3["C7"].value == 500063
+    earlier = {c.value for ws_ in (ws, ws2) for c in ws_["C"][5:] if c.value is not None}
+    assert ws3["C6"].value == 40005
+    assert 500001 <= ws3["C7"].value < 1_000_000 and ws3["C7"].value not in earlier  # new, from the counter
 
     # another plant continues the same numbering - a temp number is never issued twice
     ot = plants(client, "OTHER")[0]
@@ -257,7 +260,9 @@ def test_submission_template(client, sample_bytes, plant_type):
 
     header, parts, master = (data_rows(wb[n]) for n in wb.sheetnames)
     assert len(header) == job["equipment_count"] and len(parts) == job["spare_count"]
-    assert len(master) == job["line_count"]
+    # MATERIAL MASTER: each material once - a spare listed under two equipment is one record here
+    assert len({tuple(r) for r in master}) == len(master)
+    assert {r[0] for r in master} == {w[col("MATERIAL TEMP NUMBER")] for w in working}
 
     # BOM HEADER: equipment temp numbers, equipment indicator YES, empty remark columns
     equipment = [w for w in working if w[col("MATERIAL IS AN EQUIPMENT INDICATOR")] == "YES"]
@@ -275,8 +280,8 @@ def test_submission_template(client, sample_bytes, plant_type):
         (w[col("MATERIAL TEMP NUMBER")], w[col("QUANTITY")], w[col("POSITION NUMBER")]) for w in spares]
     assert all(p[15] is None for p in parts)  # CDC_BOM Parts Remark left empty
 
-    # MATERIAL MASTER: every line, in working-template order
-    assert [m[0] for m in master] == [w[col("MATERIAL TEMP NUMBER")] for w in working]
+    # MATERIAL MASTER: every material once, in working-template order
+    assert [m[0] for m in master] == list(dict.fromkeys(w[col("MATERIAL TEMP NUMBER")] for w in working))
     assert wb["MATERIAL MASTER"].freeze_panes == "A6"
 
 

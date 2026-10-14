@@ -73,13 +73,17 @@ Tables are created automatically at start-up; plants and country codes are seede
 
 | Item | Dukhan | Other plants |
 |---|---|---|
-| Equipment (B) | next number from **40001** | SAP NUMBER if present, else next from **40001** |
-| Spare (L) | next number from **500001** | SAP NUMBER if present, else next from **500001** |
+| Equipment (B) | SAP NUMBER if present, else next from **40001** | SAP NUMBER if present, else next from **40001** |
+| Spare (L) | SAP NUMBER if present, else next from **500001** | SAP NUMBER if present, else next from **500001** |
 
-* Numbers **continue across uploads** and are kept **per plant** (`NUMBERING_SCOPE=plant`); Dukhan has its own
-  running sequence. With no planning plant selected, the sequence of the plant type is used.
-  Set `NUMBERING_SCOPE=plant_type` for one sequence for Dukhan and one shared by all other plants.
-* The same equipment tag / material (SAP no., else SPF no.) **keeps the same number** when uploaded again.
+* New numbers come from **one running counter per kind** (equipment / spare) shared by all plants. It always
+  continues after the highest number in the material master, so a number is never issued twice.
+* **One MANUFACTURER PART NUMBER = one number, in every plant** (equipment and spares): a part number already
+  used (numbering memory, or ManufPartNo of the material master) gets the same number again. Case and extra
+  spaces are ignored. From another plant's master rows only 4xxxx / 5xxxxx numbers are reused, never an SAP number.
+* Equipment and spares **never share a number**, even with the same part number (4xxxx vs 5xxxxx).
+* Without a part number the number is reused **per plant** (`NUMBERING_SCOPE=plant`): equipment by TAG NO,
+  spares by SAP no., else SPF no. Set `NUMBERING_SCOPE=plant_type` to share this reuse by all plants of a type.
 * Allocation locks the sequence row in PostgreSQL, so simultaneous uploads never get the same number.
 * Start values: `EQUIPMENT_START`, `SPARE_START` in `.env`.
 
@@ -97,9 +101,9 @@ its spares (L) in input order.
 | SERIAL NUMBER | 1, 2, 3 … |
 | SAP MATERIAL NUMBER *(Dukhan)* | SAP NUMBER |
 | MATERIAL TEMP NUMBER | see §4 |
-| MATERIAL TYPEVCATEGORY | B = equipment, L = spare |
+| MATERIAL TYPEVCATEGORY | B = equipment, L = spare, N = spare whose SAP number starts with 3 or 8 (all plants; the SAP NUMBER of the row, or a SAP number reused from the master as MATERIAL TEMP NUMBER) |
 | OLD MATERIAL NUMBER/SPF NUMBER | OLD MATERIAL NUMBER/SPF NUMBER |
-| MATERIAL DESCRIPTION | NEW DESCRIPTION OF PARTS (equipment: DESCRIPTION OF PARTS) |
+| MATERIAL DESCRIPTION | spare: the material master's description when both MATERIAL TEMP NUMBER and OLD MATERIAL NUMBER/SPF NUMBER (exact text) match a master record (same plant first); otherwise NEW DESCRIPTION OF PARTS (equipment: DESCRIPTION OF PARTS) |
 | LEN(…) columns | live `=LEN()` formula of the column on the left |
 | MAINTENANCE PLANNING PLANT | selected plant code, empty if not selected |
 | BASE UNIT OF MEASURE | code part of UNIT OF MEASURE (`NO - NUMBERS` → `NO`) |

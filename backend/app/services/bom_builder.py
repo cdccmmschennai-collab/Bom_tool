@@ -15,6 +15,9 @@ OTHER = "OTHER"
 
 DESC_MAX = 40
 OLD_MAT_MAX = 18
+NON_STOCK_SAP_PREFIXES = ("3", "8")  # spare with such a SAP number -> MATERIAL TYPEVCATEGORY N
+SAP_NUMBER_MIN = 1_000_000  # temp numbers have 5 / 6 digits (4xxxx, 5xxxxx); a longer number is a SAP number
+EQUIPMENT_OLD_MAT_PREFIX = "QEQU-"  # equipment OLD MATERIAL NUMBER/SPF NUMBER = QEQU-<MATERIAL TEMP NUMBER>
 MFR_NAME_MAX = 30
 MFR_NAME_LABEL = "Manufacture name : "
 ADD_INFO_SEPARATOR = " | "
@@ -131,6 +134,16 @@ class BomLine:
     mfr_name_full: str | None = None    # full manufacturer name when it was shortened to fit
 
     @property
+    def type_category(self) -> str:
+        """MATERIAL TYPEVCATEGORY as written to the templates and the material master: N for a spare whose
+        SAP number starts with 3 or 8 (every plant), else the category (B / L). `category` itself stays B / L."""
+        sap = self.sap_material_number
+        if not sap and isinstance(self.temp_number, int) and self.temp_number >= SAP_NUMBER_MIN:
+            sap = self.temp_number  # no SAP NUMBER in the row, but the number reused from the master is one
+        sap = str(sap or "").strip()
+        return "N" if self.category == "L" and sap.startswith(NON_STOCK_SAP_PREFIXES) else self.category
+
+    @property
     def add_information_text(self) -> str | None:
         """CDC_ADD INFORMATION cell: the full part number and/or 'Manufacture name : <full name>'."""
         parts = [self.add_information] if self.add_information else []
@@ -195,6 +208,15 @@ def _is_equipment(row: InputRow) -> bool:
 def normalize_part_number(value: str) -> str:
     """'1sbl  137001r1110 ' -> '1SBL 137001R1110' (case and extra spaces do not make a new part)."""
     return " ".join(value.split()).upper()
+
+
+def _equipment_key(row: InputRow, tag_key: str, has_header: bool) -> str:
+    """One manufacturer part number = one temp number (in every plant); by tag when the equipment row has no
+    part number, or when the line was built from a spare row (its part number is the spare's)."""
+    pn = row.get("MANUFACTURER PART NUMBER") if has_header else None
+    if pn and pn.strip():
+        return f"PN:{normalize_part_number(pn)}"
+    return f"TAG:{tag_key}"
 
 
 def _spare_key(row: InputRow) -> str:
@@ -286,10 +308,10 @@ def build_bom(
                         h.excel_row)
         tag = h.get("TAG NO") or key
         eq_sap = h.get("SAP NUMBER") if key in header else None
-        if plant_type == OTHER and eq_sap:
+        if eq_sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
             eq_temp: int | str = to_int_if_digits(eq_sap)  # type: ignore[assignment]
         else:
-            eq_temp = allocator.equipment(f"TAG:{key}")
+            eq_temp = allocator.equipment(_equipment_key(h, key, key in header))
         spir_base, rev = split_spir(h.get("SPIR NO"))
         if spir_base and spir_base not in spir_numbers:
             spir_numbers.append(spir_base)
@@ -310,7 +332,7 @@ def build_bom(
             serial=serial, category="B", tag=tag,
             sap_material_number=to_int_if_digits(eq("SAP NUMBER")),
             temp_number=eq_temp,
-            old_material_number=eq("OLD MATERIAL NUMBER/SPF NUMBER"),
+            old_material_number=f"{EQUIPMENT_OLD_MAT_PREFIX}{eq_temp}",
             description=eq("NEW DESCRIPTION OF PARTS") or eq("DESCRIPTION OF PARTS"),
             planning_plant=planning_plant,
             uom=code_part(eq("UNIT OF MEASURE")),
@@ -336,7 +358,7 @@ def build_bom(
         for s in spares[key]:
             serial = len(lines) + 1
             sap = s.get("SAP NUMBER")
-            if plant_type == OTHER and sap:
+            if sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
                 temp: int | str = to_int_if_digits(sap)  # type: ignore[assignment]
             else:
                 temp = allocator.spare(_spare_key(s))

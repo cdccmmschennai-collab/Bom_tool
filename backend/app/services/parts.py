@@ -12,11 +12,11 @@ import io
 import logging
 
 import openpyxl
-from sqlalchemy import String, case, cast, func, literal, null, select, true
+from sqlalchemy import String, and_, case, cast, func, literal, null, or_, select, true
 from sqlalchemy.orm import Session, undefer
 
 from ..models import ConversionJob, ExtractedLine, material_master_import as master
-from .bom_builder import BomResult, part_number_from_add_information
+from .bom_builder import NON_STOCK_SAP_PREFIXES, SAP_NUMBER_MIN, BomResult, part_number_from_add_information
 from .excel_writer import (BOM_COLUMNS, BOM_FIRST_DATA_ROW, BOM_SHEET, TAG_FIRST_DATA_ROW, TAG_SHEET,
                            _header_index, _sheet)
 from .input_reader import norm_header
@@ -67,7 +67,8 @@ def _lines_from_workbook(job_id: int, content: bytes) -> list[ExtractedLine]:
         if not (get(r, "temp_number") or get(r, "description") or get(r, "mfr_part_number")):
             continue
         lines.append(ExtractedLine(
-            job_id=job_id, serial=len(lines) + 1, category=get(r, "category"),
+            job_id=job_id, serial=len(lines) + 1,
+            category="L" if get(r, "type_category") == "N" else get(r, "type_category"),  # stored as B / L
             tag=tags.get(get(r, "bom_header_number") or ""), sap_material_number=get(r, "sap_material_number"),
             temp_number=get(r, "temp_number"), old_material_number=get(r, "old_material_number"),
             description=get(r, "description"), planning_plant=get(r, "planning_plant"), uom=get(r, "uom"),
@@ -99,13 +100,20 @@ def backfill(db: Session) -> int:
 
 # ------------------------------------------------------------------ search
 L = ExtractedLine
+# MATERIAL TYPEVCATEGORY of a conversion line, as written to the templates (BomLine.type_category)
+# its SAP number: the SAP NUMBER of the row, else the temp number when that is a SAP number (reused from the master)
+_L_SAP = func.coalesce(func.nullif(L.sap_material_number, ""),
+                       case((and_(L.temp_number.op("~")("^[0-9]+$"),
+                                  func.length(L.temp_number) >= len(str(SAP_NUMBER_MIN))), L.temp_number)))
+L_TYPE_CATEGORY = case((and_(L.category == "L", or_(*[_L_SAP.like(f"{p}%") for p in NON_STOCK_SAP_PREFIXES])), "N"),
+                       else_=L.category)
 # field -> (column on the conversion lines, column on material_master_import or None when it has no such column)
 FIELDS = {
     "part_number": (L.mfr_part_number, master.c.manufacturers_part_number),
     "tag_number": (L.tag, None),
     "sap_material_number": (L.sap_material_number, master.c.sap_material_number),
     "material_temp_number": (L.temp_number, cast(master.c.material_temp_number, String)),
-    "material_category": (L.category, master.c.material_type_category),
+    "material_category": (L_TYPE_CATEGORY, master.c.material_type_category),
     "description": (L.description, master.c.material_description),
     "planning_plant": (L.planning_plant, master.c.maintenance_planning_plant),
     "manufacturer_name": (L.mfr_name, master.c.manufacturer_name),
@@ -139,7 +147,7 @@ def _sql_part_key(column):
 def _conversion_rows(db: Session, condition) -> list[dict]:
     q = (
         select(literal("CONVERSION").label("source"), L.job_id.label("job_id"),
-               L.temp_number.label("material_temp_number"), L.category.label("material_category"),
+               L.temp_number.label("material_temp_number"), L_TYPE_CATEGORY.label("material_category"),
                L.mfr_part_number.label("part_number"), L.description.label("description"),
                L.tag.label("tag_number"), L.sap_material_number.label("sap_material_number"),
                L.planning_plant.label("planning_plant"), L.mfr_name.label("manufacturer_name"),

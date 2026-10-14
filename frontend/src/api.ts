@@ -5,21 +5,55 @@ const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 /** Fired when the server answers 401 (session expired or signed out elsewhere). */
 export const SIGNED_OUT_EVENT = "bom:signed-out";
 
+/** Error text for a failed response: the API's `detail` when there is one, else "status statusText". */
+function errorMessage(status: number, statusText: string, body: unknown): string {
+  const detail = (body as { detail?: unknown } | null | undefined)?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d: { msg: string }) => d.msg).join("; ");
+  return `${status} ${statusText}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { credentials: "include", ...init });
   if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
   if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
+    let body: unknown;
     try {
-      const body = await res.json();
-      if (typeof body.detail === "string") message = body.detail;
-      else if (Array.isArray(body.detail)) message = body.detail.map((d: { msg: string }) => d.msg).join("; ");
+      body = await res.json();
     } catch {
       /* not JSON */
     }
-    throw new Error(message);
+    throw new Error(errorMessage(res.status, res.statusText, body));
   }
   return (res.status === 204 ? undefined : await res.json()) as T;
+}
+
+/** POST with upload progress (fetch cannot report it). Same credentials, errors and sign-out event as request(). */
+function upload<T>(path: string, body: FormData, onUploadProgress: (fraction: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}${path}`);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && e.total > 0) onUploadProgress(e.loaded / e.total); };
+    xhr.upload.onload = () => onUploadProgress(1); // every byte sent - the server is converting now
+    xhr.onerror = () => reject(new TypeError("Failed to fetch"));
+    xhr.onabort = () => reject(new Error("The upload was cancelled."));
+    xhr.onload = () => {
+      if (xhr.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
+      let json: unknown;
+      let parsed = true;
+      try {
+        json = xhr.responseText ? JSON.parse(xhr.responseText) : undefined;
+      } catch {
+        parsed = false;
+      }
+      const ok = xhr.status >= 200 && xhr.status < 300;
+      if (!ok) reject(new Error(errorMessage(xhr.status, xhr.statusText, json)));
+      else if (!parsed) reject(new SyntaxError("Unexpected response from the server."));
+      else resolve((xhr.status === 204 ? undefined : json) as T);
+    };
+    xhr.send(body);
+  });
 }
 
 export const api = {
@@ -44,12 +78,16 @@ export const api = {
   plants: (plantType?: PlantType) =>
     request<Plant[]>(plantType ? `/api/plants?plant_type=${encodeURIComponent(plantType)}` : "/api/plants"),
 
-  convert: (params: { plantType: PlantType; plantId: number | null; file: File }) => {
+  /** `onUploadProgress` (0..1) reports the upload; the conversion itself runs after it reaches 1. */
+  convert: (params: { plantType: PlantType; plantId: number | null; file: File;
+                      onUploadProgress?: (fraction: number) => void }) => {
     const form = new FormData();
     form.append("plant_type", params.plantType);
     if (params.plantId) form.append("plant_id", String(params.plantId));
     form.append("file", params.file);
-    return request<Job>("/api/jobs", { method: "POST", body: form });
+    return params.onUploadProgress
+      ? upload<Job>("/api/jobs", form, params.onUploadProgress)
+      : request<Job>("/api/jobs", { method: "POST", body: form });
   },
 
   jobs: (params: { limit: number; offset: number; search?: string; dateFrom?: string; dateTo?: string }) => {

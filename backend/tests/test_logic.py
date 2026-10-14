@@ -52,7 +52,7 @@ def test_dukhan_lines(sample_bytes):
     assert eq.description == "LV SWITCHGEAR" and eq.quantity == 1 and eq.planning_plant == "DK01"
     sp = res.lines[1]
     assert sp.category == "L" and sp.equipment_indicator == "NO"
-    assert sp.sap_material_number == 10231307 and sp.temp_number == 500001
+    assert sp.sap_material_number == 10231307 and sp.temp_number == 10231307  # SAP number used in Dukhan too
     assert sp.bom_header_number == 40001 and sp.quantity == 4 and sp.position_number == "0010"
     assert sp.spir_number == "VEN-4391-M3TY-2-43-0003"
     assert sp.uom == "NO" and sp.currency == "QAR" and sp.country_code == "QA" and sp.country_name == "QATAR"
@@ -130,7 +130,7 @@ def test_written_values(sample_bytes):
     ws = openpyxl.load_workbook(io.BytesIO(write_workbook(res, DUKHAN, s.template_dukhan)))["BOM WORKING TEMPLATE"]
     hdr = {str(c.value).strip(): c.column for c in ws[1] if c.value}
     assert ws.cell(7, hdr["SAP MATERIAL NUMBER"]).value == 10231307
-    assert ws.cell(7, hdr["MATERIAL TEMP NUMBER"]).value == 500001
+    assert ws.cell(7, hdr["MATERIAL TEMP NUMBER"]).value == 10231307  # the SAP number
     assert ws.cell(7, hdr["LEN(MAT.DESC = 40)"]).value == "=LEN(I7)"
     assert ws.cell(79, hdr["SERIAL NUMBER"]).value == 74
     assert ws.cell(80, hdr["SERIAL NUMBER"]).value is None
@@ -172,12 +172,60 @@ def test_spares_are_numbered_by_part_number():
         row(2, "T-1", "ABC123"),
         row(3, "T-1", "XYZ456"),
         InputRow(4, {"TAG NO": "T-2", "EQPT QTY": "1"}),
-        row(5, "T-2", " abc123 ", **{"SAP NUMBER": "999"}),  # same part (case / spaces), other tag + SAP
+        row(5, "T-2", " abc123 "),                           # same part (case / spaces), other tag
         row(6, "T-2", "XYZ 456"),                            # a different part number
+        row(7, "T-2", "ABC123", **{"SAP NUMBER": "999"}),    # a SAP NUMBER is used as it is (every plant)
     ]
     spares = [line.temp_number for line in build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}).lines
               if line.category == "L"]
-    assert spares == [500001, 500002, 500001, 500003]
+    assert spares == [500001, 500002, 500001, 500003, 999]
+
+
+def test_equipment_is_numbered_by_part_number():
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, pn=None):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "MANUFACTURER PART NUMBER": pn})
+
+    rows = [
+        eq(1, "T-1", "JB82"),
+        eq(2, "T-2", " jb82 "),     # same part (case / spaces), other tag -> same number
+        eq(3, "T-3", "P50P9"),      # a different part number
+        eq(4, "T-4"),               # no part number -> by tag
+        eq(5, "T-5"),
+        InputRow(6, {"TAG NO": "T-6", "QUANTITY IDENTICAL PARTS FITTED": "1",  # no equipment row: built from
+                     "MANUFACTURER PART NUMBER": "JB82"}),                     # a spare -> by tag, not the spare's PN
+    ]
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    equipment = {line.tag: line.temp_number for line in res.lines if line.category == "B"}
+    assert equipment == {"T-1": 40001, "T-2": 40001, "T-3": 40002, "T-4": 40003, "T-5": 40004, "T-6": 40005}
+    assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40003, 40004, 40005]
+
+
+def test_equipment_and_spare_keep_separate_numbers_and_reuse_them():
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, pn):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "MANUFACTURER PART NUMBER": pn})
+
+    def sp(n, tag, pn):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": "1", "MANUFACTURER PART NUMBER": pn})
+
+    rows = [
+        eq(1, "T-1", "EBAR10"),
+        sp(2, "T-1", "EBAR10"),     # same part number as its equipment -> still a spare number of its own
+        sp(3, "T-1", "O-RING"),
+        eq(4, "T-2", "EBAR10"),     # the same equipment again (other tag) -> its number again
+        sp(5, "T-2", "EBAR10"),     # the same spare again -> its number again
+        sp(6, "T-2", "o-ring "),    # the same spare again (case / spaces) -> its number again
+        eq(7, "T-3", "P50P9"),      # a new equipment -> new number
+        sp(8, "T-3", "GASKET"),     # a new spare -> new number
+    ]
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(line.category, line.temp_number) for line in res.lines] == [
+        ("B", 40001), ("L", 500001), ("L", 500002),
+        ("B", 40001), ("L", 500001), ("L", 500002),
+        ("B", 40002), ("L", 500003)]
 
 
 def test_manufacturer_name_fits_30_whole_words():
@@ -289,3 +337,130 @@ def test_data_text_is_black(sample_bytes, plant_type):
     for row in tpl.worksheets[0].iter_rows(max_row=5):
         for c in row:
             assert out.worksheets[0][c.coordinate].font.color == c.font.color
+
+
+@pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
+def test_equipment_old_material_is_qequ_plus_temp_number(sample_bytes, plant_type):
+    res = build(sample_bytes, plant_type)
+    equipment = [l for l in res.lines if l.category == "B"]
+    assert equipment
+    for line in equipment:
+        assert line.old_material_number == f"QEQU-{line.temp_number}"
+    # spares keep the OLD MATERIAL NUMBER/SPF NUMBER of their input row
+    rows = {r.excel_row: r for r in read_input(sample_bytes)}
+    for line in res.lines:
+        if line.category == "L":
+            assert line.old_material_number == rows[line.input_row].get("OLD MATERIAL NUMBER/SPF NUMBER")
+
+
+def test_templates_list_each_unique_record_once():
+    from app.services.excel_writer import TAG_SHEET, _sheet, write_submission
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "MANUFACTURER PART NUMBER": "EBAR10-2-T-316",
+                            "DESCRIPTION OF PARTS": "EARTH BAR"})
+
+    def sp(n, tag, pn, qty="1"):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty, "MANUFACTURER PART NUMBER": pn,
+                            "DESCRIPTION OF PARTS": f"PART {pn}"})
+
+    rows = []
+    for i, tag in enumerate(["24-EB-0068", "24-EB-0069", "24-EB-0072"]):   # the same block three times
+        rows += [eq(10 * i + 1, tag), sp(10 * i + 2, tag, "EBAR10-2-T-316"), sp(10 * i + 3, tag, "ELINK-T")]
+    rows += [eq(41, "24-EB-0073"), sp(42, "24-EB-0073", "ELINK-T", qty="2"),  # same block, other quantity
+             sp(43, "24-EB-0073", "NUT")]                                     # and a spare not listed yet
+    result = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert len(result.lines) == 12 and len(result.tags) == 4                  # the conversion keeps every line
+
+    s = get_settings()
+    ws = openpyxl.load_workbook(io.BytesIO(write_workbook(result, DUKHAN, s.template_dukhan)))
+    bom = ws["BOM WORKING TEMPLATE"]
+    hdr = {str(c.value).strip(): c.column for c in bom[1] if c.value}
+    got = [(bom.cell(r, hdr["SERIAL NUMBER"]).value, bom.cell(r, hdr["MATERIAL TEMP NUMBER"]).value,
+            bom.cell(r, hdr["QUANTITY"]).value) for r in range(6, 12)]
+    # one equipment block: B, its two spares, the other-quantity record and the new spare - renumbered 1..5
+    assert got == [(1, 40001, 1), (2, 500001, 1), (3, 500002, 1), (4, 500002, 2), (5, 500003, 1),
+                   (None, None, None)]
+    tag_sheet = _sheet(ws, TAG_SHEET)
+    assert [tag_sheet.cell(r, 1).value for r in range(3, 7)] == ["24-EB-0068", "24-EB-0069", "24-EB-0072",
+                                                                 "24-EB-0073"]   # every tag still mapped
+
+    sub = openpyxl.load_workbook(io.BytesIO(write_submission(result, s.submission_dukhan)))
+    count = lambda name: sum(1 for row in sub[name].iter_rows(min_row=6) if any(c.value is not None for c in row))  # noqa: E731
+    assert (count("BOM HEADER"), count("BOM PARTS"), count("MATERIAL MASTER")) == (1, 4, 4)
+
+
+def test_identical_spare_under_two_versions_of_an_equipment_is_listed_once():
+    from app.services.excel_writer import unique_lines
+    from app.services.input_reader import InputRow
+
+    rows = []
+    for i, (tag, qty) in enumerate([("PG-1", "131"), ("PG-2", "146")]):  # same equipment, other EQPT QTY
+        rows += [InputRow(10 * i + 1, {"TAG NO": tag, "EQPT QTY": qty, "MANUFACTURER PART NUMBER": "LFBSPG"}),
+                 InputRow(10 * i + 2, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": "1",
+                                       "MANUFACTURER PART NUMBER": "GAUGE SAVER"})]
+    out = unique_lines(build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}).lines)
+    # both equipment records stay (they differ), the identical spare is listed once - under the first
+    assert [(ln.serial, ln.category, ln.temp_number, ln.quantity) for ln in out] == [
+        (1, "B", 40001, 131), (2, "L", 500001, 1), (3, "B", 40001, 146)]
+
+
+@pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
+def test_spare_with_sap_number_3_or_8_is_category_n(plant_type):
+    from app.services.excel_writer import write_submission
+    from app.services.input_reader import InputRow, norm_header
+
+    def row(n, tag, sap=None, equipment=False, pn=None):
+        values = {"TAG NO": tag, "SAP NUMBER": sap, "MANUFACTURER PART NUMBER": pn or f"PN-{n}"}
+        values.update({"EQPT QTY": "1"} if equipment else {"QUANTITY IDENTICAL PARTS FITTED": "1"})
+        return InputRow(n, values)
+
+    rows = [row(1, "T-1", "30161704", equipment=True),   # equipment with a 3... SAP number -> stays B
+            row(2, "T-1", "30159733"), row(3, "T-1", "80012204"),   # spares 3... / 8... -> N
+            row(4, "T-1", "10579834"), row(5, "T-1")]               # spare 1... / no SAP -> L
+    result = build_bom(rows, plant_type, "DK01", InMemoryAllocator(), {})
+    assert [ln.category for ln in result.lines] == ["B", "L", "L", "L", "L"]          # internal B / L unchanged
+    assert [ln.type_category for ln in result.lines] == ["B", "N", "N", "L", "L"]
+    assert (result.equipment_count, result.spare_count) == (1, 4)
+
+    s = get_settings()
+    wb = openpyxl.load_workbook(io.BytesIO(write_workbook(
+        result, plant_type, s.template_dukhan if plant_type == DUKHAN else s.template_other)))
+    ws = wb["BOM WORKING TEMPLATE"]
+    col = {norm_header(c.value): c.column for c in ws[1] if c.value}[norm_header("MATERIAL TYPEVCATEGORY")]
+    assert [ws.cell(r, col).value for r in range(6, 11)] == ["B", "N", "N", "L", "L"]
+    sub = openpyxl.load_workbook(io.BytesIO(write_submission(
+        result, s.submission_dukhan if plant_type == DUKHAN else s.submission_other)))
+    mm = sub["MATERIAL MASTER"]
+    mcol = {norm_header(c.value): c.column for c in mm[1] if c.value}[norm_header("MATERIAL TYPEVCATEGORY")]
+    assert [mm.cell(r, mcol).value for r in range(6, 11)] == ["B", "N", "N", "L", "L"]
+
+
+@pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
+def test_sap_number_is_the_temp_number_in_every_plant(plant_type):
+    from app.services.input_reader import InputRow
+
+    rows = [InputRow(1, {"TAG NO": "T-1", "EQPT QTY": "1", "SAP NUMBER": "30161704"}),
+            InputRow(2, {"TAG NO": "T-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "SAP NUMBER": "10579834"}),
+            InputRow(3, {"TAG NO": "T-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "MANUFACTURER PART NUMBER": "X"}),
+            InputRow(4, {"TAG NO": "T-2", "EQPT QTY": "1"})]
+    lines = build_bom(rows, plant_type, "DK01", InMemoryAllocator(), {}).lines
+    assert [(ln.category, ln.temp_number) for ln in lines] == [
+        ("B", 30161704), ("L", 10579834), ("L", 500001),   # SAP numbers as they are; no SAP -> counter
+        ("B", 40001)]                                      # the counters were not used for SAP lines
+    assert lines[0].old_material_number == "QEQU-30161704" and lines[1].bom_header_number == 30161704
+
+
+def test_category_n_when_the_reused_number_is_a_sap_number():
+    """A spare without SAP NUMBER that reuses a SAP number from the material master (by part number)."""
+    from dataclasses import replace
+    from app.services.input_reader import InputRow
+
+    rows = [InputRow(1, {"TAG NO": "T-1", "EQPT QTY": "1"}),
+            InputRow(2, {"TAG NO": "T-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "MANUFACTURER PART NUMBER": "X"})]
+    spare = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}).lines[1]
+    assert spare.type_category == "L"                                        # counter number 500001
+    assert replace(spare, temp_number=30161704).type_category == "N"         # master's SAP number 3...
+    assert replace(spare, temp_number=80012204).type_category == "N"         # 8...
+    assert replace(spare, temp_number=10428450).type_category == "L"         # 1... SAP number

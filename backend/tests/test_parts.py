@@ -20,7 +20,7 @@ except OperationalError:  # pragma: no cover
 
 from app.main import app  # noqa: E402
 from app.manage import main as manage  # noqa: E402
-from app.models import ExtractedLine, material_master_import as master  # noqa: E402
+from app.models import ConversionJob, ExtractedLine, material_master_import as master  # noqa: E402
 from app.services.parts import backfill, like_pattern  # noqa: E402
 
 PASSWORD = "correct-horse-1"
@@ -177,3 +177,45 @@ def test_backfill_and_delete(client, job):
     assert client.delete(f"/api/jobs/{job['id']}").status_code == 204
     with Session(engine) as db:
         assert db.scalar(select(func.count()).where(ExtractedLine.job_id == job["id"])) == 0
+
+
+def test_long_spir_description_is_stored_in_full(client):
+    # SPIR spec text can exceed 1000 characters; it used to overflow VARCHAR(500) and fail the upload
+    desc = "JUNCTION BOX\nTYPE: 16 TERMINAL TYPE JB\n" + "X" * 1300
+    with Session(engine) as db:
+        own_job = ConversionJob(plant_type="OTHER", status="SUCCESS", input_filename="long.xlsx", input_file=b"")
+        db.add(own_job)
+        db.flush()
+        db.add(ExtractedLine(job_id=own_job.id, serial=9999, category="L", description=desc,
+                             mfr_part_number="P" * 400, tag="T" * 300))
+        db.commit()
+        assert db.scalar(select(ExtractedLine.description).where(ExtractedLine.serial == 9999)) == desc
+
+
+def test_category_n_for_spares_with_sap_number_3_or_8(client):
+    with Session(engine) as db:
+        job = ConversionJob(plant_type="OTHER", status="SUCCESS", input_filename="n.xlsx", input_file=b"")
+        db.add(job)
+        db.flush()
+        db.add_all([ExtractedLine(job_id=job.id, serial=1, category="B", temp_number="41900",
+                                  sap_material_number="30161704", mfr_part_number="N-EQ"),
+                    ExtractedLine(job_id=job.id, serial=2, category="L", temp_number="30159733",
+                                  sap_material_number="30159733", mfr_part_number="N-SP")])
+        db.commit()
+    by_pn = {i["part_number"]: i for i in find(client, "part_number", "N-*")["items"]}
+    assert by_pn["N-EQ"]["material_category"] == "B" and by_pn["N-SP"]["material_category"] == "N"
+    with Session(engine) as db:                                            # stored category is still L
+        assert db.scalar(select(ExtractedLine.category).where(ExtractedLine.mfr_part_number == "N-SP")) == "L"
+    assert any(i["part_number"] == "N-SP" for i in find(client, "material_category", "N")["items"])
+
+
+def test_category_n_for_reused_sap_number_without_sap_column(client):
+    with Session(engine) as db:
+        job = ConversionJob(plant_type="DUKHAN", status="SUCCESS", input_filename="r.xlsx", input_file=b"")
+        db.add(job)
+        db.flush()
+        db.add_all([ExtractedLine(job_id=job.id, serial=1, category="L", temp_number="30161704", mfr_part_number="R-N"),
+                    ExtractedLine(job_id=job.id, serial=2, category="L", temp_number="500321", mfr_part_number="R-L")])
+        db.commit()
+    by_pn = {i["part_number"]: i["material_category"] for i in find(client, "part_number", "R-*")["items"]}
+    assert by_pn == {"R-N": "N", "R-L": "L"}

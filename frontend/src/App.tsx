@@ -64,6 +64,23 @@ function PlantFields({ plants, plantId, onChange, disabled }: {
   );
 }
 
+/* ------------------------------------------------------------------ busy Generate button (shared) */
+/** Label and bar shown inside the Generate button while a conversion runs. `percent` is real progress;
+ *  leave it out when none is known and the bar slides until the request finishes. */
+function ButtonProgress({ label, percent }: { label: string; percent?: number }) {
+  const known = percent !== undefined;
+  return (
+    <span className="btn-progress">
+      <span>{label}</span>
+      <span className={`btn-progress__track ${known ? "" : "btn-progress__track--indeterminate"}`}
+            role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100}
+            aria-valuenow={known ? Math.round(percent) : undefined}>
+        <span className="btn-progress__bar" style={known ? { width: `${percent}%` } : undefined} />
+      </span>
+    </span>
+  );
+}
+
 /* ------------------------------------------------------------------ batch converter */
 type BatchItem = {
   id: number;
@@ -82,6 +99,9 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // files in the current / last Generate run - drives the button progress and the result message
+  const [run, setRun] = useState<{ total: number; finished: number; failed: number } | null>(null);
+  const inFlight = useRef(false); // blocks a second click before the disabled button re-renders
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => { onBusyChange?.(busy); }, [busy]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -97,6 +117,7 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
     const files = Array.from(list);
     const rejected = files.filter((f) => !isExcel(f)).map((f) => f.name);
     setError(rejected.length ? `Skipped (not .xlsx / .xlsm): ${rejected.join(", ")}` : null);
+    setRun(null);
     setItems((prev) => {
       // a finished batch is replaced by the next one
       const keep = prev.every((i) => i.status === "waiting") ? prev : [];
@@ -113,21 +134,30 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
 
   // one file at a time, in list order, so temp numbers continue in sequence for the plant
   const submit = async () => {
-    if (!plant) return;
+    if (!plant || inFlight.current) return;
     const queue = items.filter((i) => i.status !== "done");
     if (!queue.length) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
-    for (const item of queue) {
-      update(item.id, { status: "running", error: undefined });
-      try {
-        const job = await api.convert({ plantType: plant.plant_type, plantId: plant.id, file: item.file });
-        update(item.id, { status: "done", job });
-      } catch (e) {
-        update(item.id, { status: "failed", error: (e as Error).message });
+    let failedCount = 0;
+    setRun({ total: queue.length, finished: 0, failed: 0 });
+    try {
+      for (const [n, item] of queue.entries()) {
+        update(item.id, { status: "running", error: undefined });
+        try {
+          const job = await api.convert({ plantType: plant.plant_type, plantId: plant.id, file: item.file });
+          update(item.id, { status: "done", job });
+        } catch (e) {
+          failedCount += 1;
+          update(item.id, { status: "failed", error: (e as Error).message });
+        }
+        setRun({ total: queue.length, finished: n + 1, failed: failedCount });
       }
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
     }
-    setBusy(false);
     onConverted();
   };
 
@@ -200,17 +230,32 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
       )}
 
       <div className="actions">
-        <button className="primary" disabled={!canSubmit} onClick={submit}>
-          {busy ? "Converting…"
-            : done > 0 && pending === failed ? `Retry ${failed} failed file${failed > 1 ? "s" : ""}`
+        <button className={`primary ${busy ? "is-busy" : ""}`} disabled={!canSubmit} onClick={submit} aria-busy={busy}>
+          {busy && run ? (
+            // files finish one at a time, so the percentage is real
+            <ButtonProgress label={`Converting ${Math.min(run.finished + 1, run.total)} of ${run.total} · ${Math.round((run.finished / run.total) * 100)}%`}
+                            percent={(run.finished / run.total) * 100} />
+          ) : done > 0 && pending === failed ? `Retry ${failed} failed file${failed > 1 ? "s" : ""}`
             : `Generate ${pending > 1 ? `${pending} BOM templates` : "BOM template"}`}
         </button>
         {items.length > 0 && !busy && (
-          <button className="secondary" onClick={() => { setItems([]); setError(null); }}>Clear list</button>
+          <button className="secondary" onClick={() => { setItems([]); setError(null); setRun(null); }}>Clear list</button>
         )}
         {!plant && <span className="hint">Select the maintenance planning plant first.</span>}
       </div>
 
+      {!busy && run && run.finished === run.total && (
+        run.failed === 0 ? (
+          <div className="alert alert--ok" role="status">
+            {run.total > 1 ? `All ${run.total} files converted successfully.` : "File converted successfully."} Download the templates from the list above.
+          </div>
+        ) : (
+          <div className="alert alert--error" role="alert">
+            {run.failed} of {run.total} file{run.total > 1 ? "s" : ""} failed to convert
+            {run.total - run.failed > 0 ? ` (${run.total - run.failed} converted)` : ""} - see the list above for the reason.
+          </div>
+        )
+      )}
       {error && <div className="alert alert--error">{error}</div>}
       </div>
     </section>
@@ -226,6 +271,9 @@ function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Job | null>(null);
+  // upload share sent so far (0..1); null once the server has the whole file and is converting
+  const [uploaded, setUploaded] = useState<number | null>(null);
+  const inFlight = useRef(false); // blocks a second click before the disabled button re-renders
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => { onBusyChange?.(busy); }, [busy]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -249,18 +297,25 @@ function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; 
   };
 
   const submit = async () => {
-    if (!plant || !file) return;
+    if (!plant || !file || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     setResult(null);
+    setUploaded(0);
     try {
-      const job = await api.convert({ plantType: plant.plant_type, plantId: plant.id, file });
+      const job = await api.convert({
+        plantType: plant.plant_type, plantId: plant.id, file,
+        // the server reports no conversion progress, only the upload is measurable
+        onUploadProgress: (f) => setUploaded(f >= 1 ? null : f),
+      });
       setResult(job);
       onConverted();
     } catch (e) {
-      setError((e as Error).message);
+      setError(`Conversion failed: ${(e as Error).message}`);
       onConverted(); // refresh history (failed attempts are logged too)
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
@@ -302,13 +357,16 @@ function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; 
       </div>
 
       <div className="actions">
-        <button className="primary" disabled={!canSubmit} onClick={submit}>
-          {busy ? "Converting…" : "Generate BOM template"}
+        <button className={`primary ${busy ? "is-busy" : ""}`} disabled={!canSubmit} onClick={submit} aria-busy={busy}>
+          {!busy ? "Generate BOM template"
+            : uploaded !== null ? <ButtonProgress label={`Uploading… ${Math.round(uploaded * 100)}%`} percent={uploaded * 100} />
+            : <ButtonProgress label="Converting…" />}
         </button>
         {!plant && <span className="hint">Select the maintenance planning plant first.</span>}
       </div>
 
-      {error && <div className="alert alert--error">{error}</div>}
+      {error && <div className="alert alert--error" role="alert">{error}</div>}
+      {result && <div className="alert alert--ok" role="status">Conversion completed successfully.</div>}
       {result && <ResultView job={result} />}
       </div>
     </section>

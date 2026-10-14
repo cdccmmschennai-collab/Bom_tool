@@ -16,6 +16,7 @@ from ..services.excel_writer import TemplateError
 from ..services.input_reader import InputFileError
 from ..services.combiner import SUBMISSION, WORKING, combine
 from ..services.converter import convert
+from ..services.initial_cleanup import run_tester_cleanup_once
 
 router = APIRouter(prefix="/api/jobs", tags=["conversions"])
 
@@ -51,6 +52,12 @@ async def create_job(
     content = await file.read()
     if len(content) > get_settings().max_upload_mb * 1024 * 1024:
         raise HTTPException(413, f"File is larger than {get_settings().max_upload_mb} MB.")
+
+    # the tester's first extraction clears the tester's earlier data - exactly once (see initial_cleanup)
+    try:
+        run_tester_cleanup_once(db, user)
+    except Exception as exc:
+        raise HTTPException(500, "Initial cleanup failed - nothing was deleted or converted. Please try again.") from exc
 
     try:
         return convert(db, plant_type=plant_type, plant=plant, content=content, filename=name,

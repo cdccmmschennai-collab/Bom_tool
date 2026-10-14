@@ -102,7 +102,10 @@ def test_combine_submission_template(client, two_jobs):
     sp = sum(j["spare_count"] for j in two_jobs)
     assert len(rows(sheet(wb, "BOM HEADER"), 6)) == eq
     assert len(rows(sheet(wb, "BOM PARTS"), 6)) == sp
-    assert len(rows(sheet(wb, "MATERIAL MASTER"), 6)) == eq + sp
+    # each job's MATERIAL MASTER lists every material once; the combined sheet appends them per job
+    per_job = [len(rows(sheet(openpyxl.load_workbook(io.BytesIO(client.get(f"/api/jobs/{j['id']}/submission").content)),
+                              "MATERIAL MASTER"), 6)) for j in two_jobs]
+    assert len(rows(sheet(wb, "MATERIAL MASTER"), 6)) == sum(per_job)
 
 
 def test_combine_validation(client, sample_bytes, two_jobs):

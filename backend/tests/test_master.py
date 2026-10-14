@@ -30,11 +30,11 @@ def db():
         yield s
 
 
-def add_master(db, plant, temp, equipment, sap=None, spf=None):
+def add_master(db, plant, temp, equipment, sap=None, spf=None, pn=None):
     db.execute(insert(master).values(
         material_temp_number=temp, maintenance_planning_plant=plant, material_is_equipment_indicator=equipment,
         material_type_category="B" if equipment else "L", sap_material_number=sap,
-        old_material_number_spf_number=spf))
+        old_material_number_spf_number=spf, manufacturers_part_number=pn))
 
 
 def test_numbering_continues_after_master(db):
@@ -83,3 +83,117 @@ def test_spare_reuses_master_number_by_part_number(db):
     again = DbAllocator(db, "DUKHAN:T1", ["T1"])  # next upload
     assert again.spare("PN:NEW-PART") == 500021
     assert again.spare("PN:OTHER-PART") == 500022
+
+def test_part_number_reuses_the_number_in_every_plant(db):
+    t1 = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    eq, sp = t1.equipment("PN:JB82"), t1.spare("PN:O-RING 1")
+    t2 = DbAllocator(db, "OTHER:T2", ["T2"])                  # another plant, later conversion
+    assert t2.equipment("PN:JB82") == eq and t2.spare("PN:O-RING 1") == sp
+    assert t2.new_numbers == 0
+
+
+def test_part_number_found_in_another_plants_master(db):
+    add_master(db, "T2", 40100, True, pn=" ex-cell  t3 ")       # equipment row of plant T2
+    add_master(db, "T2", 500050, False, pn="P-1")               # spare row of plant T2
+    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    assert alloc.equipment("PN:EX-CELL T3") == 40100
+    assert alloc.spare("PN:P-1") == 500050
+    assert alloc.new_numbers == 0
+
+
+def test_sap_number_of_another_plant_is_not_reused(db):
+    add_master(db, "T2", 80012204, False, pn="SAP-PN")          # Other plant: SAP number in the temp column
+    add_master(db, "T1", 80012999, False, pn="SAME-PLANT")      # same plant: reused as before
+    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    assert alloc.spare("PN:SAP-PN") == 500001
+    assert alloc.spare("PN:SAME-PLANT") == 80012999
+
+
+def test_equipment_and_spare_numbers_stay_apart(db):
+    add_master(db, "T1", 500060, False, pn="BOTH")              # the part is known as a spare only
+    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    assert alloc.equipment("PN:BOTH") == 40001
+
+
+def test_tag_numbers_stay_per_plant(db):
+    t1 = DbAllocator(db, "DUKHAN:T1", ["T1"]).equipment("TAG:34-QD-23")
+    assert DbAllocator(db, "DUKHAN:T1", ["T1"]).equipment("TAG:34-QD-23") == t1
+    assert DbAllocator(db, "OTHER:T2", ["T2"]).equipment("TAG:34-QD-23") != t1
+
+
+def test_spare_never_takes_an_equipment_number(db):
+    add_master(db, "T2", 40100, True, pn="JB82")                # the part is known as an equipment only
+    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    assert alloc.spare("PN:JB82") == 500001                     # a spare gets a spare number of its own
+    assert alloc.equipment("PN:JB82") == 40100                  # the equipment keeps its number
+    assert alloc.spare("PN:JB82") == 500001 and alloc.new_numbers == 1   # repeated: reused, not new
+
+
+def test_templates_take_the_master_description_of_matching_spares(db):
+    from app.services.input_reader import InputRow
+    from app.services.material_master import with_master_descriptions
+
+    def spare(n, sap, spf, desc):
+        return InputRow(n, {"TAG NO": "T-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "SAP NUMBER": sap,
+                            "OLD MATERIAL NUMBER/SPF NUMBER": spf, "DESCRIPTION OF PARTS": desc})
+
+    rows = [InputRow(1, {"TAG NO": "T-1", "EQPT QTY": "1", "DESCRIPTION OF PARTS": "SPIR EQUIPMENT"}),
+            spare(2, "30159733", "4460-2433001-01L01", "SPIR A"),   # number + SPF match (same plant preferred)
+            spare(3, "30157603", "4460-2433001-01l02 ", "SPIR B"),  # match ignoring case / spaces, other plant only
+            spare(4, "30157604", "4460-2433001-01L03", "SPIR C"),   # number matches, SPF does not
+            spare(5, "30157605", "4460-2433001-01L04", "SPIR D"),   # match, but the master has no description
+            spare(6, "30157606", None, "SPIR E")]                   # no SPF number
+    result = build_bom(rows, DUKHAN, "T1", InMemoryAllocator(), {})
+    db.execute(insert(master), [
+        dict(material_temp_number=40001, maintenance_planning_plant="T1", material_description="MASTER EQUIPMENT",
+             old_material_number_spf_number="QEQU-40001"),                       # equipment: never used
+        dict(material_temp_number=30159733, maintenance_planning_plant="T2", material_description="OTHER PLANT",
+             old_material_number_spf_number="4460-2433001-01L01"),
+        dict(material_temp_number=30159733, maintenance_planning_plant="T1", material_description="SAME PLANT",
+             old_material_number_spf_number="4460-2433001-01L01"),
+        dict(material_temp_number=30157603, maintenance_planning_plant="T2", material_description="ONLY OTHER PLANT",
+             old_material_number_spf_number="4460-2433001-01L02"),
+        dict(material_temp_number=30157604, maintenance_planning_plant="T1", material_description="WRONG SPF",
+             old_material_number_spf_number="4460-2-43-3001-L03"),               # other format: not the same text
+        dict(material_temp_number=30157605, maintenance_planning_plant="T1", material_description=" ",
+             old_material_number_spf_number="4460-2433001-01L04"),
+        dict(material_temp_number=30157606, maintenance_planning_plant="T1", material_description="NO SPF IN SPIR",
+             old_material_number_spf_number="X"),
+    ])
+    templates = with_master_descriptions(db, result, "T1")
+    assert [ln.description for ln in templates.lines] == [
+        "SPIR EQUIPMENT", "SAME PLANT", "ONLY OTHER PLANT", "SPIR C", "SPIR D", "SPIR E"]
+    assert [ln.description for ln in result.lines] == [                       # the result itself is unchanged
+        "SPIR EQUIPMENT", "SPIR A", "SPIR B", "SPIR C", "SPIR D", "SPIR E"]
+
+
+def test_conversion_writes_master_description_to_both_templates(db, sample_bytes):
+    import io
+
+    import openpyxl
+
+    from app.models import ExtractedLine
+    from app.services.converter import convert
+    from app.services.input_reader import norm_header
+
+    spf = next(ln.old_material_number for ln in build_bom(read_input(sample_bytes), DUKHAN, None, InMemoryAllocator(),
+                                                          {}).lines if ln.temp_number == 10231307)
+    db.execute(insert(master).values(material_temp_number=10231307, maintenance_planning_plant=None,
+                                     material_description="MASTER DESCRIPTION", old_material_number_spf_number=spf))
+    db.commit()
+    job = convert(db, plant_type="DUKHAN", plant=None, content=sample_bytes, filename="in.xlsx", user_name="t")
+
+    def descriptions(ws, first=6):
+        col = {norm_header(c.value): c.column for c in ws[1] if c.value}
+        rows = [r for r in range(first, ws.max_row + 1) if ws.cell(r, col[norm_header("MATERIAL TEMP NUMBER")]).value]
+        return {ws.cell(r, col[norm_header("MATERIAL TEMP NUMBER")]).value:
+                ws.cell(r, col[norm_header("MATERIAL DESCRIPTION")]).value for r in rows}
+
+    working = openpyxl.load_workbook(io.BytesIO(job.output_file))["BOM WORKING TEMPLATE"]
+    submission = openpyxl.load_workbook(io.BytesIO(job.submission_file))
+    assert descriptions(working)[10231307] == "MASTER DESCRIPTION"
+    assert descriptions(submission["BOM PARTS"])[10231307] == "MASTER DESCRIPTION"
+    assert descriptions(submission["MATERIAL MASTER"])[10231307] == "MASTER DESCRIPTION"
+    assert descriptions(working)[40001] == "LV SWITCHGEAR"  # equipment: the SPIR description
+    spir = db.scalar(select(ExtractedLine.description).where(ExtractedLine.temp_number == "10231307").limit(1))
+    assert spir != "MASTER DESCRIPTION"                                       # Parts Master keeps the SPIR text

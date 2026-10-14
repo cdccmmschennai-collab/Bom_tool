@@ -37,14 +37,9 @@ function StatusBadge({ job }: { job: Job }) {
   if (job.status !== "SUCCESS") {
     return <span className="badge badge--err" title={job.error ?? ""}>Failed</span>;
   }
-  const n = job.warnings?.length ?? 0;
-  return n ? (
-    <span className="badge badge--warn" title={(job.warnings ?? []).map((w) => w.message).join("\n")}>
-      Completed · {n} warning{n > 1 ? "s" : ""}
-    </span>
-  ) : (
-    <span className="badge badge--ok">Completed</span>
-  );
+  // the label is always just "Completed"; any warnings stay readable in the hover tooltip
+  const warnings = (job.warnings ?? []).map((w) => w.message).join("\n");
+  return <span className="badge badge--ok" title={warnings || undefined}>Completed</span>;
 }
 
 export function DownloadMenu({ job }: { job: Job }) {

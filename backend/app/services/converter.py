@@ -13,7 +13,7 @@ from ..seed import country_map
 from .bom_builder import DUKHAN, build_bom
 from .excel_writer import write_submission, write_workbook
 from .input_reader import read_input
-from .material_master import save_to_master
+from .material_master import save_to_master, with_master_descriptions
 from .parts import save_lines
 from .numbering import DbAllocator, numbering_scope, scope_plant_codes
 
@@ -49,11 +49,13 @@ def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes
         allocator.job_id = job.id
         result = build_bom(rows, plant_type, plant_code, allocator, country_map(db), settings.mfr_part_number_max)
 
+        # both templates: a spare matching a master record (temp number + SPF number) shows its description
+        templates = with_master_descriptions(db, result, plant_code)
         template = settings.template_dukhan if plant_type == DUKHAN else settings.template_other
-        job.output_file = write_workbook(result, plant_type, template)
+        job.output_file = write_workbook(templates, plant_type, template)
         job.output_filename = output_filename(plant_type, plant_code, result.spir_numbers, filename)
         submission = settings.submission_dukhan if plant_type == DUKHAN else settings.submission_other
-        job.submission_file = write_submission(result, submission)
+        job.submission_file = write_submission(templates, submission)
         job.submission_filename = output_filename(plant_type, plant_code, result.spir_numbers, filename,
                                                   kind="SUBMISSION")
         job.spir_numbers = result.spir_numbers

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 from copy import copy
+from dataclasses import replace
 from pathlib import Path
 
 import openpyxl
@@ -17,7 +18,7 @@ from openpyxl.styles import Border, Color, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .bom_builder import DUKHAN, BomResult
+from .bom_builder import DUKHAN, BomLine, BomResult
 from .input_reader import norm_header
 
 BOM_SHEET = "BOM WORKING TEMPLATE"
@@ -34,7 +35,7 @@ BOM_COLUMNS: dict[str, str] = {
     "SERIAL NUMBER": "serial",
     "SAP MATERIAL NUMBER": "sap_material_number",          # Dukhan only
     "MATERIAL TEMP NUMBER": "temp_number",
-    "MATERIAL TYPEVCATEGORY": "category",
+    "MATERIAL TYPEVCATEGORY": "type_category",  # N for a spare with a 3/8 SAP number
     "OLD MATERIAL NUMBER/SPF NUMBER": "old_material_number",
     "LEN(OLD MAT/SPF NUMBER = 18)": "=LEN:OLD MATERIAL NUMBER/SPF NUMBER",
     "MATERIAL DESCRIPTION": "description",
@@ -70,6 +71,51 @@ TAG_ATTRS = ["tag", "submt", "spir_no", "rev", "herst", "typbz", "mapar", "serge
 
 class TemplateError(RuntimeError):
     pass
+
+
+# ---------------------------------------------------------------- one row per unique record
+def _row_key(line: BomLine, attrs: list[str]) -> tuple:
+    return tuple(getattr(line, a) for a in attrs)
+
+
+def _value_attrs(columns: dict[str, str]) -> list[str]:
+    """Attributes a sheet writes, without SERIAL NUMBER and the LEN() formulas (they follow the values)."""
+    return [a for a in columns.values() if a != "serial" and not a.startswith("=LEN:")]
+
+
+def unique_lines(lines: list[BomLine]) -> list[BomLine]:
+    """Lines of the working template, each unique record once. The sheet has no tag column, so tags that
+    repeat the same equipment and spares give identical rows: such an equipment block (B line + its spares)
+    is listed once, and a spare a later repeat adds that is not listed yet goes under the first block.
+    Rows are compared on every written column except SERIAL NUMBER, so a spare with e.g. another quantity
+    stays a record of its own. SERIAL NUMBER is renumbered 1..n; the lines themselves are not changed."""
+    attrs = _value_attrs(BOM_COLUMNS)
+    blocks: dict[tuple, list[BomLine]] = {}
+    seen: set[tuple] = set()  # spare rows already listed, in any block (the row includes its BOM HEADER)
+    block: tuple | None = None
+    for line in lines:
+        key = _row_key(line, attrs)
+        if line.category == "B" or block is None:
+            block = key
+            if block not in blocks:
+                blocks[block] = [line]
+            continue
+        if key not in seen:
+            seen.add(key)
+            blocks[block].append(line)
+    return [replace(line, serial=i) for i, line in enumerate((ln for b in blocks.values() for ln in b), start=1)]
+
+
+def _unique_rows(lines: list[BomLine], attrs: list[str]) -> list[BomLine]:
+    """Drop lines whose values in these columns repeat an earlier line (first one kept, order kept)."""
+    seen: set[tuple] = set()
+    out = []
+    for line in lines:
+        key = _row_key(line, attrs)
+        if key not in seen:
+            seen.add(key)
+            out.append(line)
+    return out
 
 
 def _put(ws: Worksheet, row: int, col: int, value) -> None:
@@ -163,7 +209,8 @@ def write_workbook(result: BomResult, plant_type: str, template_path: Path) -> b
             raise TemplateError(f"Column '{header}' not found in the {plant_type} template.")
         targets.append((col, attr))
 
-    for i, line in enumerate(result.lines):
+    lines = unique_lines(result.lines)  # each unique record once
+    for i, line in enumerate(lines):
         r = BOM_FIRST_DATA_ROW + i
         for col, attr in targets:
             if attr.startswith("=LEN:"):
@@ -187,9 +234,9 @@ def write_workbook(result: BomResult, plant_type: str, template_path: Path) -> b
             if value is not None:
                 _put(ws2, r, idx2[norm_header(header)], value)
 
-    _border_table(ws, BOM_FIRST_DATA_ROW, len(result.lines))
+    _border_table(ws, BOM_FIRST_DATA_ROW, len(lines))
     _border_table(ws2, TAG_FIRST_DATA_ROW, len(result.tags))
-    _black_text(ws, BOM_FIRST_DATA_ROW, len(result.lines))
+    _black_text(ws, BOM_FIRST_DATA_ROW, len(lines))
     _black_text(ws2, TAG_FIRST_DATA_ROW, len(result.tags))
 
     # freeze the header blocks: rows 1-5 on the BOM sheet, rows 1-2 on the tag sheet
@@ -210,7 +257,7 @@ SUBMISSION_FIRST_DATA_ROW = 6  # rows 1-5 are the template header block on every
 # MM requirement material type / group, PO text.
 _COMMON = {
     "MATERIAL TEMP NUMBER": "temp_number",
-    "MATERIAL TYPEVCATEGORY": "category",
+    "MATERIAL TYPEVCATEGORY": "type_category",  # N for a spare with a 3/8 SAP number
     "OLD MATERIAL NUMBER/SPF NUMBER": "old_material_number",
     "MATERIAL DESCRIPTION": "description",
     "MAINTENANCE PLANNING PLANT": "planning_plant",
@@ -250,10 +297,11 @@ def write_submission(result: BomResult, template_path: Path) -> bytes:
     """Fill the BOM submission template: BOM HEADER = equipment, BOM PARTS = spares (linked to their
     equipment by BOM header number), MATERIAL MASTER = every material."""
     wb = openpyxl.load_workbook(template_path)
+    unique = unique_lines(result.lines)  # same records as the working template, each once
     groups = {
-        "equipment": [ln for ln in result.lines if ln.equipment_indicator == "YES"],
-        "spares": [ln for ln in result.lines if ln.equipment_indicator != "YES"],
-        "all": result.lines,
+        "equipment": [ln for ln in unique if ln.equipment_indicator == "YES"],
+        "spares": [ln for ln in unique if ln.equipment_indicator != "YES"],
+        "all": unique,
     }
     for name, (group, columns) in SUBMISSION_SHEETS.items():
         ws = _sheet(wb, name)
@@ -270,7 +318,9 @@ def write_submission(result: BomResult, template_path: Path) -> bytes:
             for c in row:
                 c.value = None
 
-        lines = groups[group]
+        # a sheet shows fewer columns, so records can still repeat there (e.g. one spare under two
+        # equipment on MATERIAL MASTER) - each unique row of this sheet once
+        lines = _unique_rows(groups[group], _value_attrs(columns))
         for i, line in enumerate(lines):
             r = SUBMISSION_FIRST_DATA_ROW + i
             for col, attr in targets:
