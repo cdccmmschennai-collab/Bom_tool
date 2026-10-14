@@ -87,6 +87,7 @@ Tables are created automatically at start-up; plants and country codes are seede
 * Allocation locks the sequence row in PostgreSQL, so simultaneous uploads never get the same number.
 * Start values: `EQUIPMENT_START`, `SPARE_START` in `.env`.
 
+<<<<<<< HEAD
 ## 5. Conversion rules implemented
 
 Input: first sheet, row 1 = headers, rows 2–3 (SAP field codes / lengths) skipped, data from row 4.
@@ -134,6 +135,9 @@ rows 1–2 on the tag sheet). Checks such as "description longer than 40" or "co
 **warnings in the app**, not as colours in the file.
 
 ## 6. API
+=======
+## 5. API
+>>>>>>> 82dac6341afbf9c356209c9dd6b381257da2a1c5
 
 | Method | Path | |
 |---|---|---|
@@ -144,7 +148,7 @@ rows 1–2 on the tag sheet). Checks such as "description longer than 40" or "co
 | GET | `/api/jobs/{id}/output` · `/input` | download files |
 | GET | `/api/health` | health check |
 
-## 7. Tests
+## 6. Tests
 
 ```bash
 cd backend
@@ -157,7 +161,7 @@ pytest -q
 colours are unchanged; `tests/test_api.py` checks numbering continuity per plant, re-use of numbers, concurrent
 uploads and validation errors.
 
-## 8. Project structure
+## 7. Project structure
 
 ```
 backend/app/
@@ -174,7 +178,7 @@ frontend/src/            App.tsx (screen), api.ts, types.ts, styles.css
 docs/logic/              the original logic documents
 ```
 
-## 9. Replacing templates or the country list
+## 8. Replacing templates or the country list
 
 Replace the files in `backend/app/resources/` keeping the same file names. Headers are matched by name, so
 column order may change. After replacing `COUNTRY_REFERENCE.xlsx`, empty the `country_codes` table
