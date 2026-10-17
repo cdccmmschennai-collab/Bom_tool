@@ -50,7 +50,7 @@ BOM_COLUMNS: dict[str, str] = {
     "BOM HEADER NUMBER": "bom_header_number",
     "QUANTITY": "quantity",
     "POSITION NUMBER": "position_number",
-    "CDC_SPIR NUMBER": "spir_number",
+    "CDC_SPIR NUMBER": "spir_number_full",  # with revision (also on the submission); the tag sheet and the master keep the base
     "DELIVERY TIME IN WEEKS": "delivery_weeks",
     "MANUFACTURER COUNTRY CODE": "country_code",
     "MM REQUIREMENT MOVING AVERAGE PRICE": "price",
@@ -85,18 +85,17 @@ def _value_attrs(columns: dict[str, str]) -> list[str]:
 
 def unique_lines(lines: list[BomLine]) -> list[BomLine]:
     """Lines of the working template, each unique record once. The sheet has no tag column, so tags that
-    repeat the same equipment and spares give identical rows: such an equipment block (B line + its spares)
-    is listed once, and a spare a later repeat adds that is not listed yet goes under the first block.
-    Rows are compared on every written column except SERIAL NUMBER, so a spare with e.g. another quantity
-    stays a record of its own. SERIAL NUMBER is renumbered 1..n; the lines themselves are not changed."""
-    attrs = _value_attrs(BOM_COLUMNS)
-    blocks: dict[tuple, list[BomLine]] = {}
-    seen: set[tuple] = set()  # spare rows already listed, in any block (the row includes its BOM HEADER)
-    block: tuple | None = None
+    share an equipment temp number are one BOM: its block (B line of the first such tag + its spares) is
+    listed once, and a spare a later tag adds that is not listed yet goes under that block.
+    Each spare (temp number) is listed once per BOM header - its first line, so the first tag's quantity
+    and position. SERIAL NUMBER is renumbered 1..n; the lines themselves are not changed."""
+    blocks: dict[object, list[BomLine]] = {}
+    seen: set[tuple] = set()  # (BOM header, spare temp number) already listed
+    block: object = None
     for line in lines:
-        key = _row_key(line, attrs)
-        if line.category == "B" or block is None:
-            block = key
+        key = (line.bom_header_number, line.temp_number)
+        if line.category == "B" or not blocks:
+            block = line.temp_number
             if block not in blocks:
                 blocks[block] = [line]
             continue
@@ -264,7 +263,7 @@ _COMMON = {
     "BASE UNIT OF MEASURE(T006)": "uom",
     "MANUFACTURERS PART NUMBER": "mfr_part_number",
     "MANUFACTURER NAME": "mfr_name",
-    "CDC_SPIR NUMBER": "spir_number",
+    "CDC_SPIR NUMBER": "spir_number_full",  # with revision, as on the working template
     "CDC_ADD INFORMATION": "add_information_text",
 }
 SUBMISSION_SHEETS: dict[str, tuple[str, dict[str, str]]] = {

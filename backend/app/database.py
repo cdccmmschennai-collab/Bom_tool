@@ -28,7 +28,15 @@ _ADDED_COLUMNS = [
     "ALTER TABLE conversion_jobs ADD COLUMN IF NOT EXISTS submission_file BYTEA",
     # SPIR descriptions can run to well over 1000 characters (multi-line spec text); no length limit here
     *(f"ALTER TABLE extracted_lines ALTER COLUMN {col} TYPE TEXT"
-      for col in ("tag", "old_material_number", "description", "mfr_part_number", "mfr_name", "spir_number")),
+      for col in ("tag", "old_material_number", "description", "mfr_part_number", "mfr_name", "spir_number",
+                  "sap_material_number", "temp_number", "uom", "country_name", "quantity")),
+    # the same for every other column filled from SPIR text - a long value used to fail the whole conversion
+    *(f"ALTER TABLE material_master_import ALTER COLUMN {col} TYPE TEXT"
+      for col in ("old_material_number_spf_number", "material_description", "base_unit_of_measure",
+                  "manufacturers_part_number", "manufacturer_name", "cdc_spir_number", "sap_material_number")),
+    *(f"ALTER TABLE conversion_jobs ALTER COLUMN {col} TYPE TEXT"
+      for col in ("input_filename", "output_filename", "submission_filename")),
+    "ALTER TABLE material_numbers ALTER COLUMN item_key TYPE TEXT",
 ]
 
 

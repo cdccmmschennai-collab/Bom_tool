@@ -56,6 +56,8 @@ def test_dukhan_lines(sample_bytes):
     assert sp.bom_header_number == 40001 and sp.quantity == 4 and sp.position_number == "0010"
     assert sp.spir_number == "VEN-4391-M3TY-2-43-0003"
     assert sp.uom == "NO" and sp.currency == "QAR" and sp.country_code == "QA" and sp.country_name == "QATAR"
+    # every equipment line is EA, whatever its input UNIT OF MEASURE; spares keep their own
+    assert {line.uom for line in res.lines if line.category == "B"} == {"EA"}
     assert sp.price == 75.3 and sp.delivery_weeks == 20 and sp.min_qty == 1 and sp.max_qty is None
     # same material under several tags keeps one temp number
     by_sap = {}
@@ -82,6 +84,39 @@ def test_tag_sheet(sample_bytes):
     assert (t.tag, t.submt, t.spir_no, t.rev, t.herst, t.typbz, t.mapar, t.serge, t.spir_type) == (
         "34-QD-23", 40001, "VEN-4391-M3TY-2-43-0003", "A", "SCHNEIDER ELECTRIC", "OKKEN", None, "A88029",
         "NORMAL OPERATING SPARES")
+
+
+@pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
+def test_templates_spir_number_keeps_revision(sample_bytes, plant_type):
+    """CDC_SPIR NUMBER on the working and submission templates shows SPIR NO as in the input; the tag sheet,
+    the material master and the file names keep the base number."""
+    from app.services.excel_writer import TAG_SHEET, _sheet, write_submission
+
+    s = get_settings()
+    res = build(sample_bytes, plant_type)
+    full, base = "VEN-4391-M3TY-2-43-0003-REV-A", "VEN-4391-M3TY-2-43-0003"
+    assert {line.spir_number_full for line in res.lines} == {full}
+    assert {line.spir_number for line in res.lines} == {base} and res.spir_numbers == [base]
+
+    def column(ws, header, first_row):
+        col = next(c.column for row in ws.iter_rows(max_row=first_row - 1) for c in row
+                   if c.value and " ".join(str(c.value).split()).upper() == header)
+        return {ws.cell(r, col).value for r in range(first_row, ws.max_row + 1)} - {None}
+
+    wb = openpyxl.load_workbook(io.BytesIO(write_workbook(
+        res, plant_type, s.template_dukhan if plant_type == DUKHAN else s.template_other)))
+    assert column(wb["BOM WORKING TEMPLATE"], "CDC_SPIR NUMBER", 6) == {full}
+    assert column(_sheet(wb, TAG_SHEET), "SPIR NO", 3) == {base}
+    bom = wb["BOM WORKING TEMPLATE"]
+    hdr = {" ".join(str(c.value).split()).upper(): c.column for c in bom[1] if c.value}
+    eq_uom = {bom.cell(r, hdr["BASE UNIT OF MEASURE(T006)"]).value for r in range(6, bom.max_row + 1)
+              if bom.cell(r, hdr["MATERIAL IS AN EQUIPMENT INDICATOR"]).value == "YES"}
+    assert eq_uom == {"EA"}
+    sub = openpyxl.load_workbook(io.BytesIO(write_submission(
+        res, s.submission_dukhan if plant_type == DUKHAN else s.submission_other)))
+    for name in ("BOM HEADER", "BOM PARTS", "MATERIAL MASTER"):
+        assert column(sub[name], "CDC_SPIR NUMBER", 6) == {full}
+    assert column(sub["BOM HEADER"], "BASE UNIT OF MEASURE(T006)", 6) == {"EA"}
 
 
 def _styles(ws, rows):
@@ -378,17 +413,17 @@ def test_templates_list_each_unique_record_once():
     bom = ws["BOM WORKING TEMPLATE"]
     hdr = {str(c.value).strip(): c.column for c in bom[1] if c.value}
     got = [(bom.cell(r, hdr["SERIAL NUMBER"]).value, bom.cell(r, hdr["MATERIAL TEMP NUMBER"]).value,
-            bom.cell(r, hdr["QUANTITY"]).value) for r in range(6, 12)]
-    # one equipment block: B, its two spares, the other-quantity record and the new spare - renumbered 1..5
-    assert got == [(1, 40001, 1), (2, 500001, 1), (3, 500002, 1), (4, 500002, 2), (5, 500003, 1),
-                   (None, None, None)]
+            bom.cell(r, hdr["QUANTITY"]).value) for r in range(6, 11)]
+    # one equipment block: B, its two spares (first quantity kept) and the new spare - renumbered 1..4
+    assert got == [(1, 40001, 1), (2, 500001, 1), (3, 500002, 1), (4, 500003, 1), (None, None, None)]
+    assert [w.lines for w in result.warnings if w.code == "QUANTITY_DIFFERS"] == [[42]]
     tag_sheet = _sheet(ws, TAG_SHEET)
     assert [tag_sheet.cell(r, 1).value for r in range(3, 7)] == ["24-EB-0068", "24-EB-0069", "24-EB-0072",
                                                                  "24-EB-0073"]   # every tag still mapped
 
     sub = openpyxl.load_workbook(io.BytesIO(write_submission(result, s.submission_dukhan)))
     count = lambda name: sum(1 for row in sub[name].iter_rows(min_row=6) if any(c.value is not None for c in row))  # noqa: E731
-    assert (count("BOM HEADER"), count("BOM PARTS"), count("MATERIAL MASTER")) == (1, 4, 4)
+    assert (count("BOM HEADER"), count("BOM PARTS"), count("MATERIAL MASTER")) == (1, 3, 4)
 
 
 def test_identical_spare_under_two_versions_of_an_equipment_is_listed_once():
@@ -401,9 +436,42 @@ def test_identical_spare_under_two_versions_of_an_equipment_is_listed_once():
                  InputRow(10 * i + 2, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": "1",
                                        "MANUFACTURER PART NUMBER": "GAUGE SAVER"})]
     out = unique_lines(build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}).lines)
-    # both equipment records stay (they differ), the identical spare is listed once - under the first
+    # one temp number = one BOM header: the first tag's equipment line, the identical spare once under it
     assert [(ln.serial, ln.category, ln.temp_number, ln.quantity) for ln in out] == [
-        (1, "B", 40001, 131), (2, "L", 500001, 1), (3, "B", 40001, 146)]
+        (1, "B", 40001, 131), (2, "L", 500001, 1)]
+
+
+def test_equipment_without_part_number_is_grouped_by_its_spares():
+    from app.services.excel_writer import unique_lines
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, qty="1"):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": qty, "NEW DESCRIPTION OF PARTS": "LOCAL PANEL",
+                            "SUPPLIER/ OCM NAME": "ESS"})
+
+    def sp(n, tag, sap, pos, qty="2"):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty, "SAP NUMBER": sap,
+                            "POSITION NUMBER": pos})
+
+    rows = [eq(1, "LP-1", "8"), sp(2, "LP-1", "10636722", "0010"), sp(3, "LP-1", "10636723", "0020"),
+            eq(4, "LP-2", "2"), sp(5, "LP-2", "10636722", "0030"), sp(6, "LP-2", "10636723", "0040"),  # same spares
+            eq(7, "LP-3"), sp(8, "LP-3", "10636722", "0010"), sp(9, "LP-3", "10636723", "0020"),
+            sp(10, "LP-3", "10636722", "0090"), sp(11, "LP-3", "10636723", "0100"),  # same spares, listed twice
+            eq(12, "LP-4"), sp(13, "LP-4", "10636722", "0010"),                      # other spare set
+            eq(14, "LP-5"), sp(15, "LP-5", "10636722", "0010", qty="5"),             # same set, other quantity
+            eq(16, "LP-6"), eq(17, "LP-7")]                                          # no spares -> by tag
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(t.tag, t.submt) for t in res.tags] == [("LP-1", 40001), ("LP-2", 40001), ("LP-3", 40001),
+                                                   ("LP-4", 40002), ("LP-5", 40002), ("LP-6", 40003),
+                                                   ("LP-7", 40004)]
+    assert [w.lines for w in res.warnings if w.code == "REPEATED_SPARE"] == [[10, 11]]
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[15]]
+    out = unique_lines(res.lines)
+    # each spare once per header, with the first tag's quantity
+    assert [(ln.category, ln.temp_number, ln.bom_header_number, ln.quantity) for ln in out] == [
+        ("B", 40001, 40001, 8), ("L", 10636722, 40001, 2), ("L", 10636723, 40001, 2),
+        ("B", 40002, 40002, 1), ("L", 10636722, 40002, 2),
+        ("B", 40003, 40003, 1), ("B", 40004, 40004, 1)]
 
 
 @pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])

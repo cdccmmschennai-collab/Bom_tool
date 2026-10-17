@@ -11,13 +11,23 @@ from ..config import get_settings
 from ..models import ConversionJob, Plant
 from ..seed import country_map
 from .bom_builder import DUKHAN, build_bom
-from .excel_writer import write_submission, write_workbook
-from .input_reader import read_input
+from .excel_writer import TemplateError, write_submission, write_workbook
+from .input_reader import InputFileError, read_input
 from .material_master import save_to_master, with_master_descriptions
 from .parts import save_lines
 from .numbering import DbAllocator, numbering_scope, scope_plant_codes
 
 log = logging.getLogger(__name__)
+
+
+class ConversionFailed(Exception):
+    """An unexpected error during a conversion, with a message the user can read (the API returns it)."""
+
+
+def _short_error(exc: Exception) -> str:
+    """First line of the error, without SQLAlchemy's statement dump ('value too long for type ...')."""
+    text = str(getattr(exc, "orig", None) or exc).strip()
+    return (text.splitlines()[0] if text else type(exc).__name__)[:300]
 
 
 def output_filename(plant_type: str, plant_code: str | None, spir_numbers: list[str], input_name: str,
@@ -76,6 +86,16 @@ def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes
             user_name=user_name, status="FAILED", error=str(exc)[:2000],
             input_filename=filename, input_file=content,
         )
-        db.add(failed)
-        db.commit()
-        raise
+        saved = ""
+        try:
+            db.add(failed)
+            db.commit()
+            saved = f" It is listed in the history as failed conversion #{failed.id}."
+        except Exception:
+            db.rollback()
+            log.exception("Could not record the failed conversion of %s", filename)
+        if isinstance(exc, (InputFileError, TemplateError)):
+            raise  # a problem with the file or the template - the API shows its own message
+        raise ConversionFailed(
+            f"Unexpected error - nothing was saved and no numbers were used.{saved} Details: {_short_error(exc)}"
+        ) from exc

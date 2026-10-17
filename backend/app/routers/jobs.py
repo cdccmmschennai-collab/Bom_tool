@@ -15,7 +15,7 @@ from ..schemas import CombineIn, CombineOut, JobOut, JobPage
 from ..services.excel_writer import TemplateError
 from ..services.input_reader import InputFileError
 from ..services.combiner import SUBMISSION, WORKING, combine
-from ..services.converter import convert
+from ..services.converter import ConversionFailed, convert
 from ..services.initial_cleanup import run_tester_cleanup_once
 
 router = APIRouter(prefix="/api/jobs", tags=["conversions"])
@@ -64,6 +64,8 @@ async def create_job(
                        user_name=user.display_name)  # history shows the signed-in user
     except (InputFileError, TemplateError) as exc:
         raise HTTPException(422, str(exc)) from exc
+    except ConversionFailed as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.get("", response_model=JobPage)

@@ -110,9 +110,15 @@ def test_concurrent_uploads_never_share_numbers(client, sample_bytes):
 
     def run(i):
         wb = openpyxl.load_workbook(io.BytesIO(sample_bytes))
-        for row in wb.active.iter_rows(min_row=4):
-            if row[2].value:
+        ws = wb.active
+        desc = [c.column - 1 for c in ws[1] if str(c.value).strip().upper() in
+                ("DESCRIPTION OF PARTS", "NEW DESCRIPTION OF PARTS")]
+        for row in ws.iter_rows(min_row=4):
+            if row[2].value:  # new tags and descriptions -> new equipment (same tags/spares would share numbers)
                 row[2].value = f"{row[2].value}-C{i}"
+                for c in desc:
+                    if row[c].value:
+                        row[c].value = f"{row[c].value}-C{i}"
         buf = io.BytesIO()
         wb.save(buf)
         return upload(client, buf.getvalue(), "OTHER", ot["id"]).json()["id"]
@@ -312,3 +318,43 @@ def test_delete_job_keeps_issued_numbers(client, sample_bytes):
     # the numbers stay taken: the same tags get the same numbers again
     again = upload(client, buf.getvalue(), "DUKHAN", dk["id"]).json()
     assert output_sheet(client, again["id"])["C6"].value == first
+
+
+def test_long_text_never_fails_the_conversion(client, sample_bytes):
+    """SPIR descriptions can run to well over 1000 characters; they used to exceed VARCHAR(500) in the
+    material master and fail the whole upload with a bare 500 Internal Server Error."""
+    from sqlalchemy import text
+
+    from app.database import upgrade_columns
+
+    with engine.begin() as conn:  # a database from before the fix ...
+        conn.execute(text("ALTER TABLE material_master_import ALTER COLUMN material_description TYPE VARCHAR(500)"))
+        upgrade_columns(conn)     # ... is widened at start-up
+    wb = openpyxl.load_workbook(io.BytesIO(sample_bytes))
+    ws = wb.active
+    col = next(c.column for c in ws[1] if str(c.value).strip().upper() == "NEW DESCRIPTION OF PARTS")
+    long_desc = "JUNCTION BOX\nTYPE: 16 TERMINAL TYPE JB\n" + "SPEC TEXT " * 250   # over 2500 characters
+    assert len(long_desc) > 2000
+    ws.cell(5, col).value = long_desc
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = upload(client, buf.getvalue(), "DUKHAN", plants(client, "DUKHAN")[0]["id"])
+    assert r.status_code == 201, r.text
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT data_type FROM information_schema.columns WHERE table_name = "
+                                 "'material_master_import' AND column_name = 'material_description'")).scalar() == "text"
+        lines = client.get(f"/api/jobs/{r.json()['id']}/output")
+        assert lines.status_code == 200
+
+
+def test_unexpected_error_has_a_readable_message(client, sample_bytes, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("app.services.converter.save_to_master", broken)
+    r = upload(client, sample_bytes, "OTHER")
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "Unexpected error" in detail and "disk full" in detail
+    job_id = int(re.search(r"#(\d+)", detail).group(1))
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "FAILED"

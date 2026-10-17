@@ -4,6 +4,7 @@ Implements docs/logic/*.txt. Pure python - no database or Excel code here, so it
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -18,6 +19,7 @@ OLD_MAT_MAX = 18
 NON_STOCK_SAP_PREFIXES = ("3", "8")  # spare with such a SAP number -> MATERIAL TYPEVCATEGORY N
 SAP_NUMBER_MIN = 1_000_000  # temp numbers have 5 / 6 digits (4xxxx, 5xxxxx); a longer number is a SAP number
 EQUIPMENT_OLD_MAT_PREFIX = "QEQU-"  # equipment OLD MATERIAL NUMBER/SPF NUMBER = QEQU-<MATERIAL TEMP NUMBER>
+EQUIPMENT_UOM = "EA"  # equipment BASE UNIT OF MEASURE is always EA (the input UNIT OF MEASURE is not used)
 MFR_NAME_MAX = 30
 MFR_NAME_LABEL = "Manufacture name : "
 ADD_INFO_SEPARATOR = " | "
@@ -132,6 +134,7 @@ class BomLine:
     currency: str | None
     input_row: int
     mfr_name_full: str | None = None    # full manufacturer name when it was shortened to fit
+    spir_number_full: str | None = None  # SPIR NO as in the input, revision kept - working and submission templates
 
     @property
     def type_category(self) -> str:
@@ -210,13 +213,19 @@ def normalize_part_number(value: str) -> str:
     return " ".join(value.split()).upper()
 
 
-def _equipment_key(row: InputRow, tag_key: str, has_header: bool) -> str:
-    """One manufacturer part number = one temp number (in every plant); by tag when the equipment row has no
-    part number, or when the line was built from a spare row (its part number is the spare's)."""
+def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: list[InputRow]) -> str:
+    """One manufacturer part number = one temp number (in every plant). Without a part number, equipment with the
+    same description, manufacturer and set of spares (quantities ignored, repeats counted once) is one equipment:
+    one temp number, one BOM. By tag when it has no spares, or when the line was built from a spare row."""
     pn = row.get("MANUFACTURER PART NUMBER") if has_header else None
     if pn and pn.strip():
         return f"PN:{normalize_part_number(pn)}"
-    return f"TAG:{tag_key}"
+    if not has_header or not spare_rows:
+        return f"TAG:{tag_key}"
+    spare_set = sorted({_spare_key(s) for s in spare_rows})
+    signature = repr(((row.get("NEW DESCRIPTION OF PARTS") or row.get("DESCRIPTION OF PARTS") or "").upper(),
+                      (row.get("SUPPLIER/ OCM NAME") or "").upper(), spare_set))
+    return "SPARES:" + hashlib.sha1(signature.encode()).hexdigest()
 
 
 def _spare_key(row: InputRow) -> str:
@@ -278,6 +287,7 @@ def build_bom(
     lines: list[BomLine] = []
     tags: list[TagLine] = []
     spir_numbers: list[str] = []
+    header_spares: dict[int | str, dict] = {}  # BOM header -> spare temp -> quantity of its first line
 
     def country(row: InputRow, serial: int) -> tuple[str | None, str | None]:
         name = row.get("VENDOR COUNTRY")
@@ -311,7 +321,7 @@ def build_bom(
         if eq_sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
             eq_temp: int | str = to_int_if_digits(eq_sap)  # type: ignore[assignment]
         else:
-            eq_temp = allocator.equipment(_equipment_key(h, key, key in header))
+            eq_temp = allocator.equipment(_equipment_key(h, key, key in header, spares[key]))
         spir_base, rev = split_spir(h.get("SPIR NO"))
         if spir_base and spir_base not in spir_numbers:
             spir_numbers.append(spir_base)
@@ -335,7 +345,7 @@ def build_bom(
             old_material_number=f"{EQUIPMENT_OLD_MAT_PREFIX}{eq_temp}",
             description=eq("NEW DESCRIPTION OF PARTS") or eq("DESCRIPTION OF PARTS"),
             planning_plant=planning_plant,
-            uom=code_part(eq("UNIT OF MEASURE")),
+            uom=EQUIPMENT_UOM,
             mfr_part_number=eq("MANUFACTURER PART NUMBER"), mfr_name=eq_mname,
             equipment_indicator="YES", bom_header_number=eq_temp,
             quantity=to_number(eq("EQPT QTY")),
@@ -345,7 +355,7 @@ def build_bom(
             country_code=code, price=to_number(eq("UNIT PRICE (QAR)")),
             add_information=None, min_qty=min_q, max_qty=max_q, country_name=cname,
             currency=code_part(eq("CURRENCY")),
-            input_row=h.excel_row, mfr_name_full=eq_mname_full,
+            input_row=h.excel_row, mfr_name_full=eq_mname_full, spir_number_full=h.get("SPIR NO"),
         ))
         tags.append(TagLine(
             tag=tag, submt=eq_temp, spir_no=spir_base, rev=rev,
@@ -355,6 +365,8 @@ def build_bom(
         ))
 
         # --- spare lines
+        listed = header_spares.setdefault(eq_temp, {})
+        in_tag: set[int | str] = set()
         for s in spares[key]:
             serial = len(lines) + 1
             sap = s.get("SAP NUMBER")
@@ -383,6 +395,17 @@ def build_bom(
             qty = to_number(s.get("QUANTITY IDENTICAL PARTS FITTED"))
             if qty is None:
                 add_warning("NO_QUANTITY", "Spare lines without QUANTITY IDENTICAL PARTS FITTED.", serial)
+            # the templates list each spare once per BOM header, with the quantity of its first line
+            if temp in in_tag:
+                add_warning("REPEATED_SPARE",
+                            "Spare(s) repeated under the same tag (other position) - listed once in the templates "
+                            "(see input Excel row numbers).", s.excel_row)
+            in_tag.add(temp)
+            first_qty = listed.setdefault(temp, qty)
+            if first_qty != qty:
+                add_warning("QUANTITY_DIFFERS",
+                            "Spare(s) with another quantity than under the first tag of the same BOM header - "
+                            "the templates keep the first quantity (see input Excel row numbers).", s.excel_row)
 
             s_spir, _ = split_spir(s.get("SPIR NO"))
             if s_spir and s_spir not in spir_numbers:
@@ -406,7 +429,7 @@ def build_bom(
                 country_code=code, price=to_number(s.get("UNIT PRICE (QAR)")),
                 add_information=add_info, min_qty=min_q, max_qty=max_q, country_name=cname,
                 currency=code_part(s.get("CURRENCY")),
-                input_row=s.excel_row, mfr_name_full=mname_full,
+                input_row=s.excel_row, mfr_name_full=mname_full, spir_number_full=s.get("SPIR NO"),
             ))
 
     if len(spir_numbers) > 1:

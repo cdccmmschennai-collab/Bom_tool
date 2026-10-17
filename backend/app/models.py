@@ -61,7 +61,7 @@ class MaterialNumber(Base):
     scope: Mapped[str] = mapped_column(String(30))
     kind: Mapped[str] = mapped_column(String(10))
     # PN:<part number> (scope "ALL", every plant), else TAG:<tag> for equipment / SAP:, SPF:, DESC: for spares
-    item_key: Mapped[str] = mapped_column(String(300))
+    item_key: Mapped[str] = mapped_column(Text)  # a part / SAP / SPF number of any length
     temp_number: Mapped[int] = mapped_column(BigInteger)
     first_job_id: Mapped[int | None] = mapped_column(ForeignKey("conversion_jobs.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -79,9 +79,9 @@ class ConversionJob(Base):
     status: Mapped[str] = mapped_column(String(10))  # SUCCESS | FAILED
     error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
-    input_filename: Mapped[str] = mapped_column(String(255))
-    output_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    submission_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_filename: Mapped[str] = mapped_column(Text)
+    output_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submission_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
     spir_numbers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     equipment_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -136,17 +136,17 @@ class ExtractedLine(Base):
     serial: Mapped[int] = mapped_column(Integer)
     category: Mapped[str | None] = mapped_column(String(20), nullable=True)          # B = equipment, L = spare
     tag: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sap_material_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    temp_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sap_material_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    temp_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     old_material_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     planning_plant: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    uom: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    uom: Mapped[str | None] = mapped_column(Text, nullable=True)
     mfr_part_number: Mapped[str | None] = mapped_column(Text, nullable=True)  # full value
     mfr_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    country_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     spir_number: Mapped[str | None] = mapped_column(Text, nullable=True)
-    quantity: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    quantity: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class OneTimeTask(Base):
     """A maintenance task that must never run twice (e.g. the tester's initial cleanup). The row is the proof
@@ -182,16 +182,17 @@ material_master_import = Table(
     Column("material_temp_number", BigInteger),
     Column("material_type_category", String(20)),             # B = equipment, L = spare
     Column("material_is_equipment_indicator", Boolean),
-    Column("old_material_number_spf_number", String(255)),
-    Column("material_description", String(500)),
+    # columns filled from SPIR text have no length limit (descriptions run to well over 1000 characters)
+    Column("old_material_number_spf_number", Text),
+    Column("material_description", Text),
     Column("maintenance_planning_plant", String(50)),
-    Column("base_unit_of_measure", String(50)),
-    Column("manufacturers_part_number", String(255)),
-    Column("manufacturer_name", String(255)),
+    Column("base_unit_of_measure", Text),
+    Column("manufacturers_part_number", Text),
+    Column("manufacturer_name", Text),
     Column("mm_requirement_material_type", String(50)),
     Column("mm_requirement_material_group", String(50)),
-    Column("cdc_spir_number", String(255)),
+    Column("cdc_spir_number", Text),
     Column("reorder_point_minimum_qty", Numeric),
     Column("maximum_stock_level_max_qty", Numeric),
-    Column("sap_material_number", String(100)),
+    Column("sap_material_number", Text),
 )

@@ -16,7 +16,8 @@ from sqlalchemy import String, and_, case, cast, func, literal, null, or_, selec
 from sqlalchemy.orm import Session, undefer
 
 from ..models import ConversionJob, ExtractedLine, material_master_import as master
-from .bom_builder import NON_STOCK_SAP_PREFIXES, SAP_NUMBER_MIN, BomResult, part_number_from_add_information
+from .bom_builder import (NON_STOCK_SAP_PREFIXES, SAP_NUMBER_MIN, BomResult, part_number_from_add_information,
+                          split_spir)
 from .excel_writer import (BOM_COLUMNS, BOM_FIRST_DATA_ROW, BOM_SHEET, TAG_FIRST_DATA_ROW, TAG_SHEET,
                            _header_index, _sheet)
 from .input_reader import norm_header
@@ -74,7 +75,8 @@ def _lines_from_workbook(job_id: int, content: bytes) -> list[ExtractedLine]:
             description=get(r, "description"), planning_plant=get(r, "planning_plant"), uom=get(r, "uom"),
             mfr_part_number=part_number_from_add_information(get(r, "add_information_text"))
             or get(r, "mfr_part_number"), mfr_name=get(r, "mfr_name"),
-            country_name=get(r, "country_name"), spir_number=get(r, "spir_number"), quantity=get(r, "quantity"),
+            country_name=get(r, "country_name"), spir_number=split_spir(get(r, "spir_number_full"))[0],
+            quantity=get(r, "quantity"),
         ))
     return lines
 
