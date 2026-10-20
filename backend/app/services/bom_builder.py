@@ -299,9 +299,8 @@ def build_bom(
                         f"Vendor country not found in the country reference (code left empty): {name}", serial)
         return code, name
 
-    def mfr_name(row: InputRow, serial: int) -> tuple[str | None, str | None]:
+    def mfr_name(name: str | None, serial: int) -> tuple[str | None, str | None]:
         """(name for MANUFACTURER NAME, full name for CDC_ADD INFORMATION - only when it was shortened)."""
-        name = row.get("SUPPLIER/ OCM NAME")
         if not name or len(name) <= MFR_NAME_MAX:
             return name, None
         add_warning("MFR_NAME_TOO_LONG",
@@ -336,7 +335,9 @@ def build_bom(
 
         serial = len(lines) + 1
         code, cname = country(h, serial)
-        eq_mname, eq_mname_full = mfr_name(h, serial)
+        # equipment manufacturer = EQPT MAKE of the equipment row (EQPT QTY filled); empty when the line was
+        # built from a spare row. SUPPLIER/ OCM NAME is used for spares and HERST only.
+        eq_mname, eq_mname_full = mfr_name(eq("EQPT MAKE"), serial)
         min_q, max_q = split_min_max(eq("MIN MAX STOCK LVLS QTY"))
         lines.append(BomLine(
             serial=serial, category="B", tag=tag,
@@ -391,7 +392,7 @@ def build_bom(
             old = s.get("OLD MATERIAL NUMBER/SPF NUMBER")
             if old and len(old) > OLD_MAT_MAX:
                 add_warning("OLD_MAT_TOO_LONG", f"Old material / SPF number longer than {OLD_MAT_MAX} characters.", serial)
-            mname, mname_full = mfr_name(s, serial)
+            mname, mname_full = mfr_name(s.get("SUPPLIER/ OCM NAME"), serial)
             qty = to_number(s.get("QUANTITY IDENTICAL PARTS FITTED"))
             if qty is None:
                 add_warning("NO_QUANTITY", "Spare lines without QUANTITY IDENTICAL PARTS FITTED.", serial)

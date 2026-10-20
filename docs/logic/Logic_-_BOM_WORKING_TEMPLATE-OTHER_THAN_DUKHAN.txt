@@ -27,7 +27,7 @@ MANUFACTURERS PART NUMBER: Please refer to the “MANUFACTURER PART NUMBER” co
 
 LEN(MFR PART NUMBER = 18): length of "MANUFACTURERS PART NUMBER" column in output file
 
-MANUFACTURER NAME: Refer input file "SUPPLIER/ OCM NAME" Column 
+MANUFACTURER NAME: Equipment (row with a value in "EQPT QTY") - refer input file "EQPT MAKE" column (empty when the tag has no equipment row). Spares - refer input file "SUPPLIER/ OCM NAME" Column 
 
 LEN(MANUFACTURER=30): length of "MANUFACTURER NAME" column in output file
  

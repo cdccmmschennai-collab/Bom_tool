@@ -109,7 +109,7 @@ its spares (L) in input order.
 | MAINTENANCE PLANNING PLANT | selected plant code, empty if not selected |
 | BASE UNIT OF MEASURE | code part of UNIT OF MEASURE (`NO - NUMBERS` → `NO`) |
 | MANUFACTURERS PART NUMBER | MANUFACTURER PART NUMBER; if longer than 35 → first 35 chars here, full value in CDC_ADD INFORMATION |
-| MANUFACTURER NAME | SUPPLIER/ OCM NAME |
+| MANUFACTURER NAME | equipment (row with EQPT QTY): EQPT MAKE, empty when the tag has no equipment row; spare: SUPPLIER/ OCM NAME. Longer than 30 → whole words up to 30, full name in CDC_ADD INFORMATION |
 | MATERIAL IS AN EQUIPMENT INDICATOR | YES / NO |
 | BOM HEADER NUMBER | temp number of the equipment the line belongs to |
 | QUANTITY | EQPT QTY (equipment) / QUANTITY IDENTICAL PARTS FITTED (spare) |

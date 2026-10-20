@@ -276,7 +276,7 @@ def test_manufacturer_name_fits_30_whole_words():
 
     name = "EMERSON PROCESS AUTOMATION, QATAR"
     rows = [
-        InputRow(1, {"TAG NO": "T-1", "EQPT QTY": "1", "SUPPLIER/ OCM NAME": name}),
+        InputRow(1, {"TAG NO": "T-1", "EQPT QTY": "1", "EQPT MAKE": name, "SUPPLIER/ OCM NAME": name}),
         InputRow(2, {"TAG NO": "T-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "MANUFACTURER PART NUMBER": "P1",
                      "SUPPLIER/ OCM NAME": name}),
     ]
@@ -285,6 +285,26 @@ def test_manufacturer_name_fits_30_whole_words():
     assert result.tags[0].herst == name                               # TAG sheet keeps the full name
     assert [w.lines for w in result.warnings if w.code == "MFR_NAME_TOO_LONG"] == [[1, 2]]
     assert [line.add_information_text for line in result.lines] == [f"Manufacture name : {name}"] * 2
+
+
+def test_equipment_manufacturer_name_is_eqpt_make():
+    from app.services.input_reader import InputRow
+
+    rows = [
+        InputRow(1, {"TAG NO": "T-1", "EQPT QTY": "1", "EQPT MAKE": "JOBIRD",
+                     "SUPPLIER/ OCM NAME": "INTERNATIONAL GULF TRADING"}),
+        InputRow(2, {"TAG NO": "T-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "EQPT MAKE": "JOBIRD",
+                     "SUPPLIER/ OCM NAME": "INTERNATIONAL GULF TRADING"}),
+        InputRow(3, {"TAG NO": "T-2", "EQPT QTY": "1", "SUPPLIER/ OCM NAME": "SIEMENS"}),  # no EQPT MAKE
+        InputRow(4, {"TAG NO": "T-3", "QUANTITY IDENTICAL PARTS FITTED": "1", "EQPT MAKE": "ABB",  # no equipment
+                     "SUPPLIER/ OCM NAME": "ABB QATAR"}),                                         # row (no EQPT QTY)
+    ]
+    result = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(line.tag, line.category, line.mfr_name) for line in result.lines] == [
+        ("T-1", "B", "JOBIRD"), ("T-1", "L", "INTERNATIONAL GULF TRADING"),
+        ("T-2", "B", None),
+        ("T-3", "B", None), ("T-3", "L", "ABB QATAR")]
+    assert [t.herst for t in result.tags] == ["INTERNATIONAL GULF TRADING", "SIEMENS", "ABB QATAR"]  # unchanged
 
 
 def test_add_information_keeps_part_number_and_full_name():
