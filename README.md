@@ -124,7 +124,7 @@ its spares (L) in input order.
 | All other columns | left empty, as specified |
 
 **SPIR TAG vs SUBMT** – one row per equipment tag: EQFNR = TAG NO, SUBMT = equipment temp number,
-SPIR NO / REV split from SPIR NO, HERST = SUPPLIER/ OCM NAME, TYPBZ = EQPT MODEL, MAPAR = MANUFACTURER PART NUMBER
+SPIR NO / REV split from SPIR NO, HERST = EQPT MAKE of the equipment row (full name; empty when the tag has no equipment row), TYPBZ = EQPT MODEL, MAPAR = MANUFACTURER PART NUMBER
 (empty for equipment rows), SERGE = EQPT SR NO, SPIR TYPE (column inserted before REMARKS with the same header
 style), REMARKS empty.
 

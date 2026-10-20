@@ -304,7 +304,7 @@ def test_equipment_manufacturer_name_is_eqpt_make():
         ("T-1", "B", "JOBIRD"), ("T-1", "L", "INTERNATIONAL GULF TRADING"),
         ("T-2", "B", None),
         ("T-3", "B", None), ("T-3", "L", "ABB QATAR")]
-    assert [t.herst for t in result.tags] == ["INTERNATIONAL GULF TRADING", "SIEMENS", "ABB QATAR"]  # unchanged
+    assert [t.herst for t in result.tags] == ["JOBIRD", None, None]  # tag sheet: same EQPT MAKE rule
 
 
 def test_add_information_keeps_part_number_and_full_name():

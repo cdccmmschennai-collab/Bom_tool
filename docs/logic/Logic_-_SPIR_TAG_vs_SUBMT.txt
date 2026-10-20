@@ -10,7 +10,7 @@ SPIR NO: Refer to the “SPIR NO” column in the input file. If the value conta
 
 REV : Refer to the “SPIR NO” column in the input file. If the value contains a revision prefix, such as “VEN-4391-M3TY-2-43-0003-REV-A”, capture only the base Revision (REV) “A” in the output file. Do not include any revision information (e.g., “VEN-4391-M3TY-2-43-0003-REV-”).
 
-HERST: refer input file "SUPPLIER/ OCM NAME" column
+HERST: refer input file "EQPT MAKE" column of the equipment row (row with a value in "EQPT QTY"); empty when the tag has no equipment row. Full name, not shortened.
 
 TYPBZ: Refer input file "EQPT MODEL" column
 

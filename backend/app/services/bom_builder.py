@@ -336,7 +336,7 @@ def build_bom(
         serial = len(lines) + 1
         code, cname = country(h, serial)
         # equipment manufacturer = EQPT MAKE of the equipment row (EQPT QTY filled); empty when the line was
-        # built from a spare row. SUPPLIER/ OCM NAME is used for spares and HERST only.
+        # built from a spare row. The same value goes to HERST on the tag sheet; spares use SUPPLIER/ OCM NAME.
         eq_mname, eq_mname_full = mfr_name(eq("EQPT MAKE"), serial)
         min_q, max_q = split_min_max(eq("MIN MAX STOCK LVLS QTY"))
         lines.append(BomLine(
@@ -360,7 +360,7 @@ def build_bom(
         ))
         tags.append(TagLine(
             tag=tag, submt=eq_temp, spir_no=spir_base, rev=rev,
-            herst=h.get("SUPPLIER/ OCM NAME"), typbz=h.get("EQPT MODEL"),
+            herst=eq("EQPT MAKE"), typbz=h.get("EQPT MODEL"),  # full name, never shortened
             mapar=eq("MANUFACTURER PART NUMBER"),
             serge=h.get("EQPT SR NO"), spir_type=h.get("SPIR TYPE"),
         ))
