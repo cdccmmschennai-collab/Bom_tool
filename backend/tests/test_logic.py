@@ -237,6 +237,22 @@ def test_equipment_is_numbered_by_part_number():
     assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40003, 40004, 40005]
 
 
+def test_equipment_is_numbered_by_make_and_model():
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, make, model, pn=None):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "DESCRIPTION OF PARTS": "CENTRIFUGAL PUMP",
+                            "EQPT MAKE": make, "EQPT MODEL": model, "MANUFACTURER PART NUMBER": pn})
+
+    rows = [eq(1, "P-1", "KSB", "ETA 50", pn="A1"),
+            eq(2, "P-2", "ksb ", "eta  50", pn="B2"),  # same make + model (case / spaces) -> same number
+            eq(3, "P-3", "KSB", "ETA 65"),             # other model -> new number
+            eq(4, "P-4", "FLOWSERVE", "ETA 50"),       # other make -> new number
+            eq(5, "P-5", "KSB", None, pn="A1")]         # no model -> by part number
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40003, 40004]
+
+
 def test_equipment_and_spare_keep_separate_numbers_and_reuse_them():
     from app.services.input_reader import InputRow
 
@@ -305,6 +321,48 @@ def test_equipment_manufacturer_name_is_eqpt_make():
         ("T-2", "B", None),
         ("T-3", "B", None), ("T-3", "L", "ABB QATAR")]
     assert [t.herst for t in result.tags] == ["JOBIRD", None, None]  # tag sheet: same EQPT MAKE rule
+
+
+def test_equipment_manufacturer_name_from_identical_spare():
+    from app.services.input_reader import InputRow
+
+    vendor = "INTERNATIONAL GULF TRADING COMPANY /SALAM PETROLEUM"
+
+    def eq(n, tag):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "EQPT MAKE": vendor, "MANUFACTURER PART NUMBER": "JB83BA"})
+
+    def sp(n, tag, pn, name):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": "1", "MANUFACTURER PART NUMBER": pn,
+                            "SUPPLIER/ OCM NAME": name})
+
+    rows = [eq(1, "T-1"), sp(2, "T-1", "jb83ba ", "JOBIRD"),   # the spare is the equipment itself -> its make
+            eq(3, "T-2"), sp(4, "T-2", "JB81", "JOBIRD"),      # other part number -> EQPT MAKE
+            eq(5, "T-3"), sp(6, "T-3", "JB83BA", None)]        # same part, no SUPPLIER/ OCM NAME -> EQPT MAKE
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    equipment = [ln for ln in res.lines if ln.category == "B"]
+    assert [ln.mfr_name for ln in equipment] == ["JOBIRD", "INTERNATIONAL GULF TRADING", "INTERNATIONAL GULF TRADING"]
+    assert [ln.add_information_text for ln in equipment] == [None] + [f"Manufacture name : {vendor}"] * 2
+    assert [t.herst for t in res.tags] == [vendor] * 3                # tag sheet keeps EQPT MAKE
+
+    # the spare names the same part number after a 'P/N:' label -> still the equipment itself
+    rows = [InputRow(1, {"TAG NO": "SCBA-1", "EQPT QTY": "1", "EQPT MAKE": vendor, "MANUFACTURER PART NUMBER": "3357774"}),
+            sp(2, "SCBA-1", "DRAGER PAS LITE-P/N: 3357774", "DRÄGER")]
+    eq_line, spare_line = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}).lines
+    assert eq_line.mfr_name == "DRÄGER"
+    assert spare_line.mfr_part_number == "DRAGER PAS LITE-P/N: 3357774"   # written as in the input
+
+
+def test_core_part_number_reads_the_value_after_a_label():
+    from app.services.bom_builder import _core_part_number
+
+    assert _core_part_number("DRAGER PAS LITE-P/N: 3357774") == "3357774"
+    assert _core_part_number("pump pn 12-ab") == "12-AB"
+    assert _core_part_number("SEAL PART NO. X1") == "X1"
+    assert _core_part_number("PART NUMBER # 77") == "77"
+    assert _core_part_number("PN50") == "PN50"                          # not a label
+    assert _core_part_number("SPN-12") == "SPN-12"
+    assert _core_part_number("1sbl  137001r1110") == "1SBL 137001R1110"
+    assert _core_part_number("P/N:") == "P/N:"                          # nothing after the label -> unchanged
 
 
 def test_add_information_keeps_part_number_and_full_name():
@@ -461,7 +519,7 @@ def test_identical_spare_under_two_versions_of_an_equipment_is_listed_once():
         (1, "B", 40001, 131), (2, "L", 500001, 1)]
 
 
-def test_equipment_without_part_number_is_grouped_by_its_spares():
+def test_cabinet_is_grouped_by_its_spares_not_their_quantities():
     from app.services.excel_writer import unique_lines
     from app.services.input_reader import InputRow
 
@@ -485,13 +543,106 @@ def test_equipment_without_part_number_is_grouped_by_its_spares():
                                                    ("LP-4", 40002), ("LP-5", 40002), ("LP-6", 40003),
                                                    ("LP-7", 40004)]
     assert [w.lines for w in res.warnings if w.code == "REPEATED_SPARE"] == [[10, 11]]
-    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[15]]
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[15]]  # same set, other quantity
     out = unique_lines(res.lines)
     # each spare once per header, with the first tag's quantity
     assert [(ln.category, ln.temp_number, ln.bom_header_number, ln.quantity) for ln in out] == [
         ("B", 40001, 40001, 8), ("L", 10636722, 40001, 2), ("L", 10636723, 40001, 2),
         ("B", 40002, 40002, 1), ("L", 10636722, 40002, 2),
         ("B", 40003, 40003, 1), ("B", 40004, 40004, 1)]
+
+
+def test_cabinet_make_and_model_with_same_spares_share_a_number():
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, make="RITTAL", model="TS8"):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "NEW DESCRIPTION OF PARTS": "MARSHALLING CABINET",
+                            "EQPT MAKE": make, "EQPT MODEL": model})
+
+    def sp(n, tag, pn, qty="1"):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty, "MANUFACTURER PART NUMBER": pn})
+
+    rows = [eq(1, "MC-1"), sp(2, "MC-1", "FUSE"),
+            eq(3, "MC-2"), sp(4, "MC-2", "fuse "),                 # same make, model, spares, quantity
+            eq(5, "MC-3", model="TS9"), sp(6, "MC-3", "FUSE"),     # other model
+            eq(7, "MC-4"), sp(8, "MC-4", "FUSE", qty="3")]         # same spares, other quantity -> same
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40001]
+
+
+def test_panels_with_the_same_parts_in_other_quantities_share_a_number():
+    """SPIR VEN-4460-DGTYP-4-43-0309: AB' GLM RIO PANEL at 4 locations. DIYAB has FAHAHIL's parts with about
+    half the quantities -> one number; KHATIYA (2 extra parts) and JALEHA (2 parts fewer) keep their own."""
+    from app.services.input_reader import InputRow
+
+    fahahil = {"1783-CMS10DP": "2", "1786-RG6": "50", "1786-BNC": "4", "D5020S": "6", "ET-498-2TX": "1"}
+    panels = [("KHATIYA", ["22-4202-LP-0103", "23-4721-LP-0001"], {**fahahil, "1783-MMS10AR": "2", "1783-MMX8SA": "2"}),
+              ("FAHAHIL", ["12-4020-LP-0103", "13-4032-LP-0001"], fahahil),
+              ("JALEHA", ["31-4919-LP-0104"], {"1786-RG6": "50", "1786-BNC": "4", "D5020S": "1"}),
+              ("DIYAB", ["32-4001-LP-0001", "32-4002-LP-0001"],
+               {"1783-CMS10DP": "1", "1786-RG6": "25", "1786-BNC": "2", "D5020S": "3", "ET-498-2TX": "1"})]
+    rows, n = [], 4
+    for place, tags, spares in panels:
+        for tag in tags:
+            rows.append(InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "EQPT MAKE": "ROCKWELL AUTOMATION",
+                                     "EQPT MODEL": f"AB' GLM RIO PANEL-{place}", "NEW DESCRIPTION OF PARTS": "RIO PANEL"}))
+            for pn, qty in spares.items():
+                n += 1
+                rows.append(InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty,
+                                         "MANUFACTURER PART NUMBER": pn}))
+            n += 1
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(t.tag[:2], t.submt) for t in res.tags] == [("22", 40001), ("23", 40001), ("12", 40002), ("13", 40002),
+                                                       ("31", 40003), ("32", 40002), ("32", 40002)]
+    # the DIYAB rows with another quantity are reported; the templates keep FAHAHIL's quantities
+    assert len([w for w in res.warnings if w.code == "QUANTITY_DIFFERS"][0].lines) == 2 * 4
+
+
+def test_tag_repeated_with_other_equipment_gets_its_own_bom():
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, model):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "NEW DESCRIPTION OF PARTS": "CABINET,BREATHING APPARATUS",
+                            "EQPT MAKE": "IGT", "EQPT MODEL": model, "MANUFACTURER PART NUMBER": model})
+
+    def sp(n, tag, sap):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": "1", "SAP NUMBER": sap})
+
+    rows = [eq(1, "REB-1", "JB83BA"), sp(2, "REB-1", "30047643"),
+            eq(3, "REB-2", "JB83BA"), sp(4, "REB-2", "30047643"),
+            eq(5, "REB-3", "JB81"), sp(6, "REB-3", "10507215"),
+            eq(7, "REB-2", "JB81"), sp(8, "REB-2", "10507215"),         # same tag again, other equipment
+            eq(9, "REB-1", "JB83BA"), sp(10, "REB-1", "30047643")]      # same tag again, same equipment
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(t.tag, t.typbz, t.submt) for t in res.tags] == [
+        ("REB-1", "JB83BA", 40001), ("REB-2", "JB83BA", 40001), ("REB-3", "JB81", 40002), ("REB-2", "JB81", 40002)]
+    assert [(ln.tag, ln.category, ln.bom_header_number, ln.input_row) for ln in res.lines if ln.tag == "REB-2"] == [
+        ("REB-2", "B", 40001, 3), ("REB-2", "L", 40001, 4), ("REB-2", "B", 40002, 7), ("REB-2", "L", 40002, 8)]
+    assert [w.lines for w in res.warnings if w.code == "TAG_REPEATED_OTHER_EQUIPMENT"] == [[7]]
+
+
+def test_manual_valve_is_numbered_by_mesc_number():
+    from app.services.bom_builder import equipment_class, mesc_number
+    from app.services.input_reader import InputRow
+
+    assert mesc_number("GATE VALVE, 2IN, CL300 MESC 74.10.21.104.1") == "7410211041"
+    assert mesc_number("BALL VALVE MESC: 7410211041") == "7410211041"
+    assert mesc_number("BALL VALVE 74.10.21.104 RF") == "741021104"
+    assert mesc_number("BALL VALVE 2IN CL 300 PN 12345678") is None
+
+    def eq(n, tag, desc, make="KSB", model="X1"):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "NEW DESCRIPTION OF PARTS": desc,
+                            "EQPT MAKE": make, "EQPT MODEL": model})
+
+    rows = [eq(1, "V-1", "GATE VALVE MESC 74.10.21.104.1"),
+            eq(2, "V-2", "GATE VALVE MESC 74.10.21.104.1", make="ORION", model="Z9"),  # same MESC, other make
+            eq(3, "V-3", "GATE VALVE MESC 74.10.21.105.1"),                            # same make, other MESC
+            eq(4, "V-4", "GLOBE VALVE"),                                               # no MESC -> make + model
+            eq(5, "V-5", "CONTROL VALVE", make="FISHER", model="ED")]                  # not a manual valve
+    assert [equipment_class(r) for r in rows] == ["VALVE"] * 4 + ["OTHER"]
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40003, 40004]
+    assert [w.lines for w in res.warnings if w.code == "VALVE_NO_MESC"] == [[4]]
 
 
 @pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
@@ -552,3 +703,147 @@ def test_category_n_when_the_reused_number_is_a_sap_number():
     assert replace(spare, temp_number=30161704).type_category == "N"         # master's SAP number 3...
     assert replace(spare, temp_number=80012204).type_category == "N"         # 8...
     assert replace(spare, temp_number=10428450).type_category == "L"         # 1... SAP number
+
+
+def _reb_rows():
+    """SPIR VEN-4460-DGTYP-3-43-3001: each breathing-apparatus cabinet lists itself as its spare. Three tags have
+    EQPT MODEL JB81 but part number / description JB83BA, and a JB81 spare - the part number of other tags' equipment."""
+    from app.services.input_reader import InputRow
+
+    vendor = "INTERNATIONAL GULF TRADING COMPANY /SALAM PETROLEUM"
+    sap = {"JB83BA": "30047643", "JB81": "10507215"}
+    rows, n = [], 4
+    for tag, model, eq_pn, spare_pn, pos in [
+            ("46-REB-0001", "JB83BA", "JB83BA", "JB83BA", "0010"), ("46-REB-0002", "JB83BA", "JB83BA", "JB83BA", "0010"),
+            ("24-REB-0003", "JB81", "JB81", "JB81", "0010"), ("23-REB-0001", "JB81", "JB83BA", "JB81", "0020"),
+            ("12-REB-0002", "JB81", "JB83BA", "JB81", "0020"), ("14-REB-0003", "JB81", "JB81", "JB81", "0010"),
+            ("31-REB-0001", "JB81", "JB83BA", "JB81", "0020")]:
+        rows += [InputRow(n, {"TAG NO": tag, "EQPT MAKE": vendor, "EQPT MODEL": model, "EQPT QTY": "1",
+                              "MANUFACTURER PART NUMBER": eq_pn,
+                              "DESCRIPTION OF PARTS": f"CABINET,BREATHING APPARATUS,SCNTN,{eq_pn}"}),
+                 InputRow(n + 1, {"TAG NO": tag, "EQPT MAKE": vendor, "EQPT MODEL": model,
+                                  "QUANTITY IDENTICAL PARTS FITTED": "1", "POSITION NUMBER": pos,
+                                  "MANUFACTURER PART NUMBER": spare_pn, "SUPPLIER/ OCM NAME": "JOBIRD",
+                                  "SAP NUMBER": sap[spare_pn],
+                                  "NEW DESCRIPTION OF PARTS": "BREATHING APPARATUS CABINET"})]
+        n += 2
+    rows += [InputRow(n, {"TAG NO": "PG-1", "EQPT QTY": "1", "EQPT MAKE": "WIKA", "EQPT MODEL": "232.50",
+                          "MANUFACTURER PART NUMBER": "232.50.100", "NEW DESCRIPTION OF PARTS": "PRESSURE GAUGE"}),
+             InputRow(n + 1, {"TAG NO": "PG-1", "QUANTITY IDENTICAL PARTS FITTED": "1", "SAP NUMBER": "10000001",
+                              "MANUFACTURER PART NUMBER": "gs-1", "NEW DESCRIPTION OF PARTS": "GAUGE SAVER"})]
+    return rows
+
+
+def test_spare_with_an_equipment_part_number_is_flagged():
+    res = build_bom(_reb_rows(), DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert not [ln for ln in res.lines if ln.category == "B" and ln.review]       # equipment lines never
+    spares = {ln.tag: ln.review for ln in res.lines if ln.category == "L"}
+    for tag in ("46-REB-0001", "46-REB-0002", "24-REB-0003", "14-REB-0003"):      # its own equipment's PN
+        assert spares[tag] == [f"Same part number as its equipment (tag {tag}) - check whether this is the "
+                               "equipment itself, not a spare."]
+    for tag in ("23-REB-0001", "12-REB-0002", "31-REB-0001"):                     # only other equipment's PN
+        assert spares[tag] == [f"Part number JB81 is the equipment part number of tag(s) 24-REB-0003, 14-REB-0003, "
+                               f"but its own equipment (tag {tag}) has JB83BA - check which is right."]
+    assert spares["PG-1"] == []                                                    # no equipment has GS-1
+    assert [w.lines for w in res.warnings if w.code == "VERIFY"] == [[2, 4, 6, 8, 10, 12, 14]]
+    # the BOM itself is unchanged by the review
+    assert [(ln.tag, ln.category, ln.temp_number) for ln in res.lines][:4] == [
+        ("46-REB-0001", "B", 40001), ("46-REB-0001", "L", 30047643),
+        ("46-REB-0002", "B", 40001), ("46-REB-0002", "L", 30047643)]
+
+
+@pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
+def test_verification_sheet_lists_only_flagged_lines(plant_type):
+    from app.services.combiner import WORKING, combine
+
+    s = get_settings()
+    res = build_bom(_reb_rows(), plant_type, "DK01", InMemoryAllocator(), {})
+    content = write_workbook(res, plant_type, s.template_dukhan if plant_type == DUKHAN else s.template_other)
+    wb = openpyxl.load_workbook(io.BytesIO(content))
+    assert [ws.title.strip() for ws in wb.worksheets][2:] == ["VERIFICATION"]
+    assert wb.active.title.strip() == "BOM WORKING TEMPLATE"           # still opens on the BOM sheet
+    # BOM sheet: 40001 + its spare, 40002 (all JB81 cabinets, first tag 24-REB-0003) + its spare, the gauge + its spare
+    assert sum(1 for r in wb.worksheets[0].iter_rows(min_row=6, values_only=True) if any(r)) == 6
+    ws = wb["VERIFICATION"]
+    hdr = {c.value: c.column for c in ws[1]}
+    data = [r for r in ws.iter_rows(min_row=2, values_only=True) if any(v is not None for v in r)]
+    assert [(r[hdr["SERIAL NUMBER"] - 1], r[hdr["TAG NO"] - 1], r[hdr["MATERIAL TEMP NUMBER"] - 1]) for r in data] == [
+        (2, "46-REB-0001", 30047643), (4, "24-REB-0003", 10507215)]
+    # the JB81 spare is listed once (under 24-REB-0003); the conflicting tags' reasons come with it
+    reason = data[1][hdr["CHECK REASON"] - 1]
+    for tag, row in (("23-REB-0001", 11), ("12-REB-0002", 13), ("31-REB-0001", 17)):
+        assert f"(tag {tag}, input row {row})" in reason and "check which is right" in reason
+    assert ws.cell(2, hdr["SERIAL NUMBER"]).hyperlink.location.endswith("!A7")  # row of serial 2 on the BOM sheet
+    assert ws.freeze_panes == "A2"
+
+    # combined: the second file's serials (and links) follow the first file's BOM rows
+    vs = openpyxl.load_workbook(io.BytesIO(combine([content, content], WORKING)))["VERIFICATION"]
+    assert [r[0].value for r in vs.iter_rows(min_row=2) if r[0].value is not None] == [2, 4, 8, 10]
+    assert vs.cell(4, 1).hyperlink.location.endswith("!A13")
+
+
+@pytest.mark.parametrize("plant_type", [DUKHAN, OTHER])
+def test_no_verification_sheet_without_flagged_items(sample_bytes, plant_type):
+    from dataclasses import replace
+
+    from app.services.bom_builder import BomResult
+    from app.services.combiner import WORKING, combine
+
+    s = get_settings()
+    template = s.template_dukhan if plant_type == DUKHAN else s.template_other
+
+    def sheets(content):
+        return [ws.title.strip() for ws in openpyxl.load_workbook(io.BytesIO(content)).worksheets]
+
+    plain = write_workbook(build(sample_bytes, plant_type), plant_type, template)    # nothing flagged
+    assert sheets(plain) == ["BOM WORKING TEMPLATE", "SPIR TAG vs SUBMT"]
+    assert not [w for w in build(sample_bytes, plant_type).warnings if w.code == "VERIFY"]
+
+    # flagged lines without tag details do not count either
+    res = build_bom(_reb_rows(), plant_type, "DK01", InMemoryAllocator(), {})
+    no_tags = BomResult([replace(ln, tag=" ") for ln in res.lines], res.tags, res.warnings, res.spir_numbers)
+    assert sheets(write_workbook(no_tags, plant_type, template)) == ["BOM WORKING TEMPLATE", "SPIR TAG vs SUBMT"]
+
+    # combined: the sheet only when a file has flagged items; their serials follow the BOM rows before them
+    flagged = write_workbook(res, plant_type, template)
+    assert sheets(combine([plain, plain], WORKING)) == ["BOM WORKING TEMPLATE", "SPIR TAG vs SUBMT"]
+    combined = openpyxl.load_workbook(io.BytesIO(combine([plain, flagged], WORKING)))
+    assert combined.active.title.strip() == "BOM WORKING TEMPLATE"
+    plain_rows = sum(1 for r in openpyxl.load_workbook(io.BytesIO(plain)).worksheets[0]
+                     .iter_rows(min_row=6, values_only=True) if any(r))
+    vs = combined["VERIFICATION"]
+    assert [r[0].value for r in vs.iter_rows(min_row=2) if r[0].value is not None] == [plain_rows + 2, plain_rows + 4]
+
+
+def test_base_model_drops_a_location_suffix_only():
+    from app.services.bom_builder import base_model
+
+    for model in ("AB' GLM RIO PANEL-KHATIYA", "AB' GLM RIO PANEL-FAHAHIL", "ab' glm rio panel - jaleha",
+                  "AB' GLM RIO PANEL-DIYAB", "AB' GLM RIO PANEL"):
+        assert base_model(model) == "AB' GLM RIO PANEL"
+    # model codes keep their dashes: digits in the suffix, no space, base ending in a number, short suffix
+    for model, kept in (("NFF-SPH-4W", "NFF-SPH-4W"), ("NI-GVO-300FF", "NI-GVO-300FF"), ("BRK 703-704", "BRK 703-704"),
+                        ("DRAGER PAS LITE-P/N: 3357774", "DRAGER PAS LITE-P/N: 3357774"), ("TS8-ABCD", "TS8-ABCD"),
+                        ("ROSEMOUNT 3051-HART", "ROSEMOUNT 3051-HART"), ("GLM PANEL-FF", "GLM PANEL-FF"),
+                        ("JB83BA", "JB83BA"), ("232.50", "232.50")):
+        assert base_model(model) == kept
+
+
+@pytest.mark.parametrize("description", ["GAS DETECTOR", "LOCAL CONTROL PANEL"])  # other equipment / cabinet
+def test_model_with_a_location_suffix_shares_the_equipment_number(description):
+    from app.services.input_reader import InputRow
+
+    places = ["KHATIYA", "FAHAHIL", "JALEHA", "DIYAB"]
+    rows = []
+    for i, place in enumerate(places):
+        rows += [InputRow(10 * i + 1, {"TAG NO": f"GLM-{i}", "EQPT QTY": "1", "EQPT MAKE": "ABB",
+                                       "EQPT MODEL": f"AB' GLM RIO PANEL-{place}", "NEW DESCRIPTION OF PARTS": description}),
+                 InputRow(10 * i + 2, {"TAG NO": f"GLM-{i}", "QUANTITY IDENTICAL PARTS FITTED": "1",
+                                       "SAP NUMBER": "10636722"})]
+    rows += [InputRow(50, {"TAG NO": "GLM-X", "EQPT QTY": "1", "EQPT MAKE": "ABB", "EQPT MODEL": "AB' GLM RIO PANEL-2",
+                           "NEW DESCRIPTION OF PARTS": description}),  # digit suffix -> another model
+             InputRow(51, {"TAG NO": "GLM-X", "QUANTITY IDENTICAL PARTS FITTED": "1", "SAP NUMBER": "10636722"})]
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [t.submt for t in res.tags] == [40001] * 4 + [40002]
+    # the model shown in the output is never changed
+    assert [t.typbz for t in res.tags] == [f"AB' GLM RIO PANEL-{p}" for p in places] + ["AB' GLM RIO PANEL-2"]

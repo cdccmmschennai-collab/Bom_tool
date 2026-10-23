@@ -3,8 +3,24 @@ Logic:
 For sheet : "SPIR TAG vs SUBMT "
 
 EQFNR: refer input file "Tag number" column
+  A spare belongs to the nearest equipment row above it with the same TAG NO. The same TAG NO repeated with the same
+  equipment (same EQPT MAKE + EQPT MODEL, else part number, else description) is one BOM; repeated with another
+  equipment it is a separate equipment with its own BOM and SUBMT, so the tag gets one row per equipment here
+  (warning TAG_REPEATED_OTHER_EQUIPMENT).
 
 SUBMT: Refer ouput file sheet "BOM WORKING TEMPLATE", "Material Temp Number" column
+  Same SUBMT / new SUBMT (equipment row has no SAP NUMBER; a SAP NUMBER is always the SUBMT):
+  - Unique manual valves should contain unique "SUBMT" based on technical specification available in material long description (MESC number).
+    Manual valve = description has the word VALVE and not CONTROL / ACTUATED / ACTUATOR / SOLENOID / MOTORISED / MOV / SDV / ESDV / PCV / LCV / FCV / TCV.
+    MESC number = number after the word MESC (e.g. "MESC 74.10.21.104.1" or "MESC 7410211041"), or a dotted number 74.10.21.104(.1).
+    No MESC number found -> numbered as other equipment, warning VALVE_NO_MESC.
+  - Unique make and model of equipment other than manual valves should contain unique "SUBMT" (EQPT MAKE + EQPT MODEL, case / spaces ignored).
+    Without both make and model -> by MANUFACTURER PART NUMBER, else by tag.
+  - Unique make and model of all cabinets should contain unique "SUBMT" based on similar installed spares and quantity.
+    (Decision 2026-10-23: quantities are NOT compared - same parts in other quantities = same SUBMT.)
+    Cabinet = description has CABINET / PANEL / ENCLOSURE / CUBICLE / SWITCHBOARD / SWITCHGEAR / MCC.
+    Same make + model (location suffix ignored) + same set of spares -> same SUBMT; quantities are not compared (the BOM keeps the first tag's quantities, other quantities are reported as a warning).
+    Without make + model -> description + SUPPLIER/ OCM NAME + spares; without spares either -> by tag.
 
 SPIR NO: Refer to the “SPIR NO” column in the input file. If the value contains a revision suffix, such as “VEN-4391-M3TY-2-43-0003-REV-A”, capture only the base SPIR number “VEN-4391-M3TY-2-43-0003” in the output file. Do not include any revision information (e.g., “-REV-A”).
 

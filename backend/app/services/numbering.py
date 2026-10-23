@@ -9,8 +9,9 @@
   are taken, so an SAP number stored there is never handed to a Dukhan line.
 * Equipment and spares never share a number, even with the same part number: each kind is looked up only
   among its own kind (memory and master) and numbered from its own counter (4xxxx / 5xxxxx).
+* Equipment keyed by MESC number (manual valves) or make + model is likewise one number for all plants.
 * Every other key is reused per numbering scope (plant based - see Settings.numbering_scope): equipment
-  without a part number by its tag, spares without a part number by SAP / SPF number or description.
+  by cabinet signature or tag, spares without a part number by SAP / SPF number or description.
 * The sequence row is locked (SELECT ... FOR UPDATE) for the whole conversion, so two users
   converting at the same time can never receive the same number.
 """
@@ -26,6 +27,7 @@ from ..models import MaterialNumber, NumberSequence, Plant, material_master_impo
 EQUIPMENT = "EQUIPMENT"
 SPARE = "SPARE"
 SEQUENCE_SCOPE = "ALL"  # new numbers come from one sequence per kind, shared by every plant
+GLOBAL_KEY_PREFIXES = ("PN:", "MESC:", "MM:")  # keys reused in every plant (memory under scope "ALL")
 
 
 def numbering_scope(plant_type: str, plant_code: str | None) -> str:
@@ -117,7 +119,8 @@ class DbAllocator:
         if cache_key in self._cache:
             return self._cache[cache_key]
         seq = self._sequence(kind)  # lock first, then look up -> no race between lookup and insert
-        scope = SEQUENCE_SCOPE if key.startswith("PN:") else self.scope  # part numbers: one number for all plants
+        # part numbers, MESC numbers and make + model: one number for all plants
+        scope = SEQUENCE_SCOPE if key.startswith(GLOBAL_KEY_PREFIXES) else self.scope
         existing = self.db.execute(
             select(MaterialNumber.temp_number).where(
                 MaterialNumber.scope == scope, MaterialNumber.kind == kind, MaterialNumber.item_key == key)

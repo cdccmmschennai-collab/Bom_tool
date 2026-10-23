@@ -14,8 +14,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import openpyxl
-from openpyxl.styles import Border, Color, Side
+from openpyxl.styles import Alignment, Border, Color, Font, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .bom_builder import DUKHAN, BomLine, BomResult
@@ -67,6 +68,30 @@ BOM_COLUMNS: dict[str, str] = {
 
 TAG_COLUMNS = ["EQFNR", "SUBMT", "SPIR NO", "REV", "HERST", "TYPBZ", "MAPAR", "SERGE", "SPIR TYPE", "REMARKS"]
 TAG_ATTRS = ["tag", "submt", "spir_no", "rev", "herst", "typbz", "mapar", "serge", "spir_type", None]
+
+# Third sheet of the working template (not part of the template file): only the lines the tool is not sure
+# about, with the reason(s), for a manual check. header -> BomLine attribute; "=REASON" = the reasons,
+# None = left empty for the checker. SERIAL NUMBER links to the line on the BOM sheet.
+VERIFY_SHEET = "VERIFICATION"
+VERIFY_FIRST_DATA_ROW = 2  # row 1 = headers
+VERIFY_COLUMNS: dict[str, str | None] = {
+    "SERIAL NUMBER": "serial",
+    "TAG NO": "tag",
+    "INPUT EXCEL ROW": "input_row",
+    "MATERIAL TYPEVCATEGORY": "type_category",
+    "MATERIAL TEMP NUMBER": "temp_number",
+    "BOM HEADER NUMBER": "bom_header_number",
+    "OLD MATERIAL NUMBER/SPF NUMBER": "old_material_number",
+    "MATERIAL DESCRIPTION": "description",
+    "MANUFACTURERS PART NUMBER": "mfr_part_number",
+    "MANUFACTURER NAME": "mfr_name",
+    "QUANTITY": "quantity",
+    "CHECK REASON": "=REASON",
+    "CHECKED BY": None,
+    "CHECK RESULT / ACTION": None,
+}
+VERIFY_WIDTHS = {"MATERIAL DESCRIPTION": 45, "CHECK REASON": 70, "CHECK RESULT / ACTION": 30,
+                 "OLD MATERIAL NUMBER/SPF NUMBER": 22, "MANUFACTURERS PART NUMBER": 22, "MANUFACTURER NAME": 26}
 
 
 class TemplateError(RuntimeError):
@@ -193,6 +218,86 @@ def _ensure_spir_type_column(ws: Worksheet) -> None:
         ws.column_dimensions[get_column_letter(remarks - 1)].width or 10, 26)
 
 
+def find_verification_sheet(wb: openpyxl.Workbook) -> Worksheet | None:
+    """The VERIFICATION sheet of a working template, None when the file has none (nothing flagged, or made
+    before the sheet existed)."""
+    return next((ws for ws in wb.worksheets if ws.title.strip().upper() == VERIFY_SHEET), None)
+
+
+def verification_sheet(wb: openpyxl.Workbook) -> Worksheet:
+    """The VERIFICATION sheet of a working template; added with its header row when the file has none."""
+    ws = find_verification_sheet(wb)
+    if ws is not None:
+        return ws
+    ws = wb.create_sheet(VERIFY_SHEET)
+    for col, header in enumerate(VERIFY_COLUMNS, start=1):
+        cell = ws.cell(1, col, header)
+        cell.font = Font(bold=True)
+        cell.border = VALUE_BORDER
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.column_dimensions[get_column_letter(col)].width = VERIFY_WIDTHS.get(header, 16)
+    return ws
+
+
+def link_serial(cell, bom: Worksheet, serial: int) -> None:
+    """SERIAL NUMBER cell of the VERIFICATION sheet: the serial, linked to its line on the BOM sheet."""
+    cell.value = serial
+    cell.hyperlink = Hyperlink(ref=cell.coordinate, location=f"'{bom.title}'!A{BOM_FIRST_DATA_ROW + serial - 1}")
+
+
+def finish_verification(ws: Worksheet, row_count: int) -> None:
+    """Borders, wrapped reasons, frozen header row and a filter - like the other sheets, no colours."""
+    _border_table(ws, VERIFY_FIRST_DATA_ROW, row_count)
+    reason_col = _header_index(ws).get(norm_header("CHECK REASON"))
+    if reason_col:
+        for r in range(VERIFY_FIRST_DATA_ROW, VERIFY_FIRST_DATA_ROW + row_count):
+            ws.cell(r, reason_col).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.freeze_panes = f"A{VERIFY_FIRST_DATA_ROW}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{VERIFY_FIRST_DATA_ROW + row_count - 1}"
+
+
+def _write_verification(wb: openpyxl.Workbook, bom: Worksheet, all_lines: list[BomLine],
+                        lines: list[BomLine]) -> None:
+    """Fill the VERIFICATION sheet with the lines of the BOM sheet (`lines`, serial = its row there) that have a
+    reason to be checked and a TAG NO. A record listed once on the BOM sheet also collects the reasons of its
+    repeats (other tags / positions, dropped by unique_lines), marked with their tag and input row.
+    Nothing flagged -> the sheet is not created."""
+    def key(line: BomLine) -> tuple:
+        return line.category, line.bom_header_number, line.temp_number
+
+    def has_tag(line: BomLine) -> bool:
+        return bool(line.tag and str(line.tag).strip())
+
+    kept = {key(line): line for line in lines}
+    reasons: dict[tuple, list[str]] = {}
+    for line in all_lines:
+        k = key(line)
+        if not line.review or not has_tag(line) or k not in kept:
+            continue
+        own = line.input_row == kept[k].input_row
+        for text in line.review:
+            text = text if own else f"{text} (tag {line.tag}, input row {line.input_row})"
+            if text not in reasons.setdefault(k, []):
+                reasons[k].append(text)
+
+    flagged = [line for line in lines if key(line) in reasons and has_tag(line)]
+    if not flagged:
+        return
+    ws = verification_sheet(wb)
+    for i, line in enumerate(flagged):
+        r = VERIFY_FIRST_DATA_ROW + i
+        for col, attr in enumerate(VERIFY_COLUMNS.values(), start=1):
+            if attr == "serial":
+                link_serial(ws.cell(r, col), bom, line.serial)
+            elif attr == "=REASON":
+                _put(ws, r, col, "\n".join(reasons[key(line)]))
+            elif attr is not None:
+                value = getattr(line, attr)
+                if value is not None:
+                    _put(ws, r, col, value)
+    finish_verification(ws, len(flagged))
+
+
 def write_workbook(result: BomResult, plant_type: str, template_path: Path) -> bytes:
     wb = openpyxl.load_workbook(template_path)
 
@@ -241,6 +346,9 @@ def write_workbook(result: BomResult, plant_type: str, template_path: Path) -> b
     # freeze the header blocks: rows 1-5 on the BOM sheet, rows 1-2 on the tag sheet
     ws.freeze_panes = f"A{BOM_FIRST_DATA_ROW}"
     ws2.freeze_panes = f"A{TAG_FIRST_DATA_ROW}"
+
+    # ---- sheet 3: VERIFICATION (lines to check by hand; the two template sheets are not affected)
+    _write_verification(wb, ws, result.lines, lines)
 
     set_active_sheet(wb, ws)
     buf = io.BytesIO()

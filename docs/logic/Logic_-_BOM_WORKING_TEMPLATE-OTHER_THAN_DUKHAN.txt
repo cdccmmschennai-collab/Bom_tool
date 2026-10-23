@@ -5,7 +5,7 @@ BOM WORKING TEMPLATE-Other than DUKHAN plant
 
 SERIAL NUMBER : LIKE 1,2,3, USUAL
 
-MATERIAL TEMP NUMBER: if the "SAP NUMBER" Available put that value in this column other wise apple this logic For equipment start with 40000 (5digit number), spare start with 500000 (6 digit number) Same MANUFACTURER PART NUMBER (equipment or spare) = same number in every plant; equipment without a part number keeps one number per TAG NO. Equipment and spares never share a number.
+MATERIAL TEMP NUMBER: if the "SAP NUMBER" Available put that value in this column other wise apple this logic For equipment start with 40000 (5digit number), spare start with 500000 (6 digit number) Spares: same MANUFACTURER PART NUMBER = same number in every plant. Equipment: SUBMT rules of Logic_-_SPIR_TAG_vs_SUBMT.txt (manual valve by MESC number, cabinet by make + model + set of spares (quantities not compared), other equipment by make + model, else part number, else TAG NO). Equipment and spares never share a number.
 
 MATERIAL TYPEVCATEGORY: For Equipment-B, Spare-L; a Spare whose "SAP NUMBER" starts with 3 or 8 - N (also when the row has no SAP NUMBER but its MATERIAL TEMP NUMBER is a SAP number reused from the material master). Same value in the Working and Submission templates.
 
@@ -27,7 +27,7 @@ MANUFACTURERS PART NUMBER: Please refer to the “MANUFACTURER PART NUMBER” co
 
 LEN(MFR PART NUMBER = 18): length of "MANUFACTURERS PART NUMBER" column in output file
 
-MANUFACTURER NAME: Equipment (row with a value in "EQPT QTY") - refer input file "EQPT MAKE" column (empty when the tag has no equipment row). Spares - refer input file "SUPPLIER/ OCM NAME" Column 
+MANUFACTURER NAME: Equipment (row with a value in "EQPT QTY") - refer input file "EQPT MAKE" column (empty when the tag has no equipment row); when a spare of the equipment has the same "MANUFACTURER PART NUMBER" as the equipment (the spare is the equipment itself; after a label such as "P/N:" only the value after it is compared, e.g. "DRAGER PAS LITE-P/N: 3357774" = "3357774"), that spare's "SUPPLIER/ OCM NAME" instead. Spares - refer input file "SUPPLIER/ OCM NAME" Column 
 
 LEN(MANUFACTURER=30): length of "MANUFACTURER NAME" column in output file
  

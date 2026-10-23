@@ -60,7 +60,8 @@ class MaterialNumber(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scope: Mapped[str] = mapped_column(String(30))
     kind: Mapped[str] = mapped_column(String(10))
-    # PN:<part number> (scope "ALL", every plant), else TAG:<tag> for equipment / SAP:, SPF:, DESC: for spares
+    # PN:<part number> / MESC:<number> / MM:<make>|<model> (scope "ALL", every plant), else CABINET:<hash> or
+    # TAG:<tag> for equipment / SAP:, SPF:, DESC: for spares
     item_key: Mapped[str] = mapped_column(Text)  # a part / SAP / SPF number of any length
     temp_number: Mapped[int] = mapped_column(BigInteger)
     first_job_id: Mapped[int | None] = mapped_column(ForeignKey("conversion_jobs.id"), nullable=True)

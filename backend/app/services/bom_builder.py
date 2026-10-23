@@ -24,6 +24,19 @@ MFR_NAME_MAX = 30
 MFR_NAME_LABEL = "Manufacture name : "
 ADD_INFO_SEPARATOR = " | "
 
+# equipment classes for the SUBMT rules (words of the equipment description, whole words, plural allowed)
+VALVE, CABINET, OTHER_EQUIPMENT = "VALVE", "CABINET", "OTHER"
+VALVE_WORDS = ("VALVE",)
+NOT_MANUAL_VALVE_WORDS = ("CONTROL", "ACTUATED", "ACTUATOR", "SOLENOID", "MOTORISED", "MOTORIZED",
+                          "MOV", "SDV", "ESDV", "PCV", "LCV", "FCV", "TCV")
+CABINET_WORDS = ("CABINET", "PANEL", "ENCLOSURE", "CUBICLE", "SWITCHBOARD", "SWITCHGEAR", "MCC")
+MESC_LABELLED_RE = re.compile(r"\bMESC\b\W*((?:\d[.\s-]?){9}\d?)\b", re.IGNORECASE)
+MESC_DOTTED_RE = re.compile(r"\b(\d{2}\.\d{2}\.\d{2}\.\d{3}(?:\.\d)?)\b")
+# 'P/N:', 'PN', 'PART NO.', 'PART NUMBER #' as whole words (so 'PN50' or 'SPN-12' are not labels), on normalised text
+PART_NUMBER_LABEL_RE = re.compile(r"(?<![A-Z0-9])(?:P/N|PN|PART NUMBER|PART NO)(?![A-Z0-9])\s*[:#.\-]?\s*")
+# '<model name>-<LOCATION>' on normalised text: base ending in a letter, then '-' and one word of 4+ letters
+MODEL_LOCATION_SUFFIX_RE = re.compile(r"^(.*[A-Z])\s*[-–]\s*[A-Z]{4,}$")
+
 
 class NumberAllocator(Protocol):
     """Hands out Material Temp Numbers. The same key always returns the same number."""
@@ -135,6 +148,7 @@ class BomLine:
     input_row: int
     mfr_name_full: str | None = None    # full manufacturer name when it was shortened to fit
     spir_number_full: str | None = None  # SPIR NO as in the input, revision kept - working and submission templates
+    review: list[str] = field(default_factory=list)  # why the line needs a manual check (VERIFICATION sheet)
 
     @property
     def type_category(self) -> str:
@@ -213,19 +227,154 @@ def normalize_part_number(value: str) -> str:
     return " ".join(value.split()).upper()
 
 
+def _description(row: InputRow) -> str:
+    return (row.get("NEW DESCRIPTION OF PARTS") or row.get("DESCRIPTION OF PARTS") or "").upper()
+
+
+def _has_word(text: str, words: tuple[str, ...]) -> bool:
+    return any(re.search(rf"\b{re.escape(w)}S?\b", text) for w in words)
+
+
+def equipment_class(row: InputRow) -> str:
+    """VALVE (manual valve), CABINET or OTHER, from the words of the equipment description."""
+    desc = _description(row)
+    if _has_word(desc, VALVE_WORDS) and not _has_word(desc, NOT_MANUAL_VALVE_WORDS):
+        return VALVE
+    if _has_word(desc, CABINET_WORDS):
+        return CABINET
+    return OTHER_EQUIPMENT
+
+
+def mesc_number(text: str | None) -> str | None:
+    """MESC number in a description, digits only: 'GATE VALVE MESC 74.10.21.104.1' -> '7410211041'.
+    A number after the word MESC may be written with or without separators; without the word, only the
+    dotted form (74.10.21.104 / 74.10.21.104.1) is taken, so other numbers in the text are not mistaken for one."""
+    if not text:
+        return None
+    m = MESC_LABELLED_RE.search(text) or MESC_DOTTED_RE.search(text)
+    return re.sub(r"\D", "", m.group(1)) if m else None
+
+
+def base_model(value: str) -> str:
+    """EQPT MODEL for equipment numbering: normalised, without a location suffix, so one model installed at
+    several locations is one model: "AB' GLM RIO PANEL-KHATIYA" / "-FAHAHIL" -> "AB' GLM RIO PANEL".
+    A suffix counts only when it is one word of 4+ letters after a model name with a space that ends in a word;
+    model codes keep their dashes ("NFF-SPH-4W", "BRK 703-704", "ROSEMOUNT 3051-HART").
+    Used for the numbering keys only - the model written to the templates is never changed."""
+    text = normalize_part_number(value)
+    m = MODEL_LOCATION_SUFFIX_RE.match(text)
+    return m.group(1) if m and " " in m.group(1) else text
+
+
+def _make_model_key(row: InputRow, base: bool = False) -> str | None:
+    """MM:<make>|<model>; base=True (equipment numbering) uses the model without a location suffix."""
+    make, model = row.get("EQPT MAKE"), row.get("EQPT MODEL")
+    if make and make.strip() and model and model.strip():
+        return f"MM:{normalize_part_number(make)}|{base_model(model) if base else normalize_part_number(model)}"
+    return None
+
+
+@dataclass
+class _Block:
+    """One equipment of a tag and its spares. number_key is the tag, plus #2, #3.. for later blocks of the same tag,
+    so blocks numbered by tag do not share a number."""
+    tag_key: str
+    number_key: str
+    header: InputRow | None = None
+    spares: list[InputRow] = field(default_factory=list)
+
+
+def _equipment_identity(row: InputRow) -> str:
+    """What tells one equipment from another under a repeated tag: make + model, else part number, else description."""
+    pn = row.get("MANUFACTURER PART NUMBER")
+    return _make_model_key(row) or (f"PN:{normalize_part_number(pn)}" if pn and pn.strip() else
+                                    "DESC:" + normalize_part_number(_description(row)))
+
+
+def _core_part_number(value: str) -> str:
+    """Normalised part number, only the part after a part-number label when there is one:
+    'DRAGER PAS LITE-P/N: 3357774' -> '3357774'. Used to tell whether a spare is the equipment itself;
+    the part number written to the templates and the numbering keys keep the full value."""
+    text = normalize_part_number(value)
+    labels = list(PART_NUMBER_LABEL_RE.finditer(text))
+    rest = text[labels[-1].end():].strip() if labels else ""
+    return rest or text
+
+
+def _same_item_make(header: InputRow, spare_rows: list[InputRow]) -> str | None:
+    """SUPPLIER/ OCM NAME of the first spare with the equipment's own part number (the spare is the equipment itself)."""
+    pn = header.get("MANUFACTURER PART NUMBER")
+    if not pn or not pn.strip():
+        return None
+    pn = _core_part_number(pn)
+    for s in spare_rows:
+        spare_pn = s.get("MANUFACTURER PART NUMBER")
+        if spare_pn and spare_pn.strip() and _core_part_number(spare_pn) == pn:
+            name = s.get("SUPPLIER/ OCM NAME")
+            if name and name.strip():
+                return name
+    return None
+
+
+def _equipment_part_numbers(blocks: list[_Block]) -> dict[str, list[_Block]]:
+    """Core part number -> the equipment blocks (with an equipment row) that have it, in input order."""
+    out: dict[str, list[_Block]] = {}
+    for block in blocks:
+        pn = block.header.get("MANUFACTURER PART NUMBER") if block.header else None
+        if pn and pn.strip():
+            out.setdefault(_core_part_number(pn), []).append(block)
+    return out
+
+
+def _part_number_review(spare: InputRow, block: _Block, equipment_pns: dict[str, list[_Block]]) -> list[str]:
+    """VERIFICATION reason for a spare whose part number is the part number of an equipment in the file:
+    its own equipment (the spare is probably the equipment itself) or only other equipment (the rows disagree).
+    Case, extra spaces and a 'P/N:' label do not count. No match -> no reason."""
+    pn = spare.get("MANUFACTURER PART NUMBER")
+    if not pn or not pn.strip():
+        return []
+    matches = equipment_pns.get(_core_part_number(pn), [])
+    if not matches:
+        return []
+    own_tag = spare.get("TAG NO")
+    if block in matches:
+        return [f"Same part number as its equipment (tag {own_tag}) - check whether this is the equipment itself, "
+                "not a spare."]
+    tags = list(dict.fromkeys(b.header.get("TAG NO") for b in matches if b.header))
+    own_pn = block.header.get("MANUFACTURER PART NUMBER") if block.header else None
+    return [f"Part number {pn} is the equipment part number of tag(s) {', '.join(tags)}, but its own equipment "
+            f"(tag {own_tag}) has {own_pn or 'no part number'} - check which is right."]
+
+
 def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: list[InputRow]) -> str:
-    """One manufacturer part number = one temp number (in every plant). Without a part number, equipment with the
-    same description, manufacturer and set of spares (quantities ignored, repeats counted once) is one equipment:
-    one temp number, one BOM. By tag when it has no spares, or when the line was built from a spare row."""
-    pn = row.get("MANUFACTURER PART NUMBER") if has_header else None
-    if pn and pn.strip():
-        return f"PN:{normalize_part_number(pn)}"
-    if not has_header or not spare_rows:
+    """SUBMT rules (a SAP NUMBER is used before this is called):
+    * manual valve  -> one temp number per MESC number in the description (else as other equipment)
+    * cabinet       -> one temp number per make + model + set of installed spares; quantities are not
+                       compared (same parts, other quantities = same cabinet - the templates keep the first
+                       tag's quantities); description + supplier stand in for a missing make / model
+    * other         -> one temp number per make + model; without both, per manufacturer part number
+    By tag when none of these can be told, or when the line was built from a spare row."""
+    if not has_header:
         return f"TAG:{tag_key}"
-    spare_set = sorted({_spare_key(s) for s in spare_rows})
-    signature = repr(((row.get("NEW DESCRIPTION OF PARTS") or row.get("DESCRIPTION OF PARTS") or "").upper(),
-                      (row.get("SUPPLIER/ OCM NAME") or "").upper(), spare_set))
-    return "SPARES:" + hashlib.sha1(signature.encode()).hexdigest()
+    kind = equipment_class(row)
+    if kind == VALVE:
+        mesc = mesc_number(_description(row))
+        if mesc:
+            return f"MESC:{mesc}"
+    if kind == CABINET:
+        installed = sorted({_spare_key(s) for s in spare_rows})
+        make, model = normalize_part_number(row.get("EQPT MAKE") or ""), base_model(row.get("EQPT MODEL") or "")
+        if make and model:
+            identity: tuple[str, str] = (make, model)
+        elif installed:
+            identity = (_description(row), (row.get("SUPPLIER/ OCM NAME") or "").upper())
+        else:
+            return f"TAG:{tag_key}"
+        signature = repr((identity, installed))
+        return "CABINET:" + hashlib.sha1(signature.encode()).hexdigest()
+    pn = row.get("MANUFACTURER PART NUMBER")
+    return _make_model_key(row, base=True) or (f"PN:{normalize_part_number(pn)}" if pn and pn.strip()
+                                               else f"TAG:{tag_key}")
 
 
 def _spare_key(row: InputRow) -> str:
@@ -264,30 +413,40 @@ def build_bom(
         if line is not None and line not in w.lines:
             w.lines.append(line)
 
-    # 1. group rows: one equipment per TAG NO (even when the tag repeats in several input sheets),
-    #    its spares listed underneath in input order.
-    tag_order: list[str] = []
-    header: dict[str, InputRow] = {}
-    spares: dict[str, list[InputRow]] = {}
+    # 1. group rows into equipment blocks: one per TAG NO and equipment, its spares listed underneath in input order.
+    #    A spare belongs to the nearest equipment row above it with its tag. The tag repeated with the same
+    #    equipment (e.g. in several input sheets) stays one block; with another equipment it opens a new block.
+    blocks: list[_Block] = []
+    current: dict[str, _Block] = {}  # tag -> its last block
     for row in rows:
         tag = row.get("TAG NO")
         if not tag:
             add_warning("NO_TAG", "Input rows without a TAG NO were skipped (see input Excel row numbers).", row.excel_row)
             continue
-        key = tag.upper()
-        if key not in spares:
-            tag_order.append(key)
-            spares[key] = []
+        tag_key = tag.upper()
+        block = current.get(tag_key)
+        if _is_equipment(row) and block is not None and block.header is not None \
+                and _equipment_identity(row) != _equipment_identity(block.header):
+            add_warning("TAG_REPEATED_OTHER_EQUIPMENT",
+                        "Tag(s) repeated with another equipment - listed as a separate equipment with its own BOM "
+                        "(see input Excel row numbers).", row.excel_row)
+            block = None
+        if block is None:
+            index = sum(1 for b in blocks if b.tag_key == tag_key)
+            block = current[tag_key] = _Block(tag_key, f"{tag_key}#{index + 1}" if index else tag_key)
+            blocks.append(block)
         if _is_equipment(row):
-            header.setdefault(key, row)
+            if block.header is None:
+                block.header = row
         else:
-            spares[key].append(row)
+            block.spares.append(row)
 
     # 2. build lines
     lines: list[BomLine] = []
     tags: list[TagLine] = []
     spir_numbers: list[str] = []
     header_spares: dict[int | str, dict] = {}  # BOM header -> spare temp -> quantity of its first line
+    equipment_pns = _equipment_part_numbers(blocks)  # for the VERIFICATION sheet only
 
     def country(row: InputRow, serial: int) -> tuple[str | None, str | None]:
         name = row.get("VENDOR COUNTRY")
@@ -308,19 +467,24 @@ def build_bom(
                     "full name kept in CDC_ADD INFORMATION.", serial)
         return fit_words(name, MFR_NAME_MAX), name
 
-    for key in tag_order:
-        h = header.get(key)
-        if h is None:
-            h = spares[key][0]
+    for block in blocks:
+        key = block.tag_key
+        has_header = block.header is not None
+        h = block.header or block.spares[0]
+        if not has_header:
             add_warning("NO_EQUIPMENT_ROW",
                         "Tag(s) with spares but no equipment header row - equipment line built from the first spare row.",
                         h.excel_row)
         tag = h.get("TAG NO") or key
-        eq_sap = h.get("SAP NUMBER") if key in header else None
+        eq_sap = h.get("SAP NUMBER") if has_header else None
         if eq_sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
             eq_temp: int | str = to_int_if_digits(eq_sap)  # type: ignore[assignment]
         else:
-            eq_temp = allocator.equipment(_equipment_key(h, key, key in header, spares[key]))
+            eq_key = _equipment_key(h, block.number_key, has_header, block.spares)
+            eq_temp = allocator.equipment(eq_key)
+            if has_header and equipment_class(h) == VALVE and not eq_key.startswith("MESC:"):
+                add_warning("VALVE_NO_MESC", "Manual valve(s) without a MESC number in the description - "
+                            "numbered by make and model (or part number / tag) instead.", len(lines) + 1)
         spir_base, rev = split_spir(h.get("SPIR NO"))
         if spir_base and spir_base not in spir_numbers:
             spir_numbers.append(spir_base)
@@ -328,7 +492,6 @@ def build_bom(
         # --- equipment line
         # Equipment-level columns always come from the row; part-level columns only when a real
         # equipment header row exists (not when the line was synthesised from a spare row).
-        has_header = key in header
 
         def eq(column: str) -> str | None:
             return h.get(column) if has_header else None
@@ -336,8 +499,10 @@ def build_bom(
         serial = len(lines) + 1
         code, cname = country(h, serial)
         # equipment manufacturer = EQPT MAKE of the equipment row (EQPT QTY filled); empty when the line was
-        # built from a spare row. The same value goes to HERST on the tag sheet; spares use SUPPLIER/ OCM NAME.
-        eq_mname, eq_mname_full = mfr_name(eq("EQPT MAKE"), serial)
+        # built from a spare row. HERST on the tag sheet always gets EQPT MAKE; spares use SUPPLIER/ OCM NAME.
+        # When a spare is the equipment itself (same part number), its SUPPLIER/ OCM NAME is used instead.
+        eq_make = (_same_item_make(h, block.spares) if has_header else None) or eq("EQPT MAKE")
+        eq_mname, eq_mname_full = mfr_name(eq_make, serial)
         min_q, max_q = split_min_max(eq("MIN MAX STOCK LVLS QTY"))
         lines.append(BomLine(
             serial=serial, category="B", tag=tag,
@@ -368,7 +533,7 @@ def build_bom(
         # --- spare lines
         listed = header_spares.setdefault(eq_temp, {})
         in_tag: set[int | str] = set()
-        for s in spares[key]:
+        for s in block.spares:
             serial = len(lines) + 1
             sap = s.get("SAP NUMBER")
             if sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
@@ -431,7 +596,13 @@ def build_bom(
                 add_information=add_info, min_qty=min_q, max_qty=max_q, country_name=cname,
                 currency=code_part(s.get("CURRENCY")),
                 input_row=s.excel_row, mfr_name_full=mname_full, spir_number_full=s.get("SPIR NO"),
+                review=_part_number_review(s, block, equipment_pns),
             ))
+
+    for line in lines:
+        if line.review:
+            add_warning("VERIFY", "Line(s) the tool is not sure about - listed on the VERIFICATION sheet of the "
+                        "working template for a manual check.", line.serial)
 
     if len(spir_numbers) > 1:
         add_warning("MULTIPLE_SPIR", "The input file contains more than one SPIR number: " + ", ".join(spir_numbers))

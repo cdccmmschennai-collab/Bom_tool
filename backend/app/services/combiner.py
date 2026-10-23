@@ -17,8 +17,9 @@ from openpyxl.formula.translate import Translator
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .excel_writer import (BOM_FIRST_DATA_ROW, BOM_SHEET, SUBMISSION_FIRST_DATA_ROW, SUBMISSION_SHEETS,
-                           TAG_FIRST_DATA_ROW, TAG_SHEET, _black_text, _border_table, _header_index, _sheet,
-                           set_active_sheet)
+                           TAG_FIRST_DATA_ROW, TAG_SHEET, VERIFY_FIRST_DATA_ROW, _black_text, _border_table,
+                           _header_index, _sheet, find_verification_sheet, finish_verification, link_serial,
+                           set_active_sheet, verification_sheet)
 from .input_reader import norm_header
 
 WORKING = "WORKING"
@@ -60,6 +61,32 @@ def _append(base: Worksheet, src: Worksheet, first_row: int, next_row: int) -> i
     return next_row
 
 
+def _append_verification(base_wb: openpyxl.Workbook, bom: Worksheet, src_wb: openpyxl.Workbook, bom_offset: int,
+                         next_row: int) -> int:
+    """Append the VERIFICATION rows of a later file; their serial (and link) moves down by the BOM rows of the
+    files before it. A file without flagged items has no such sheet; the combined file gets the sheet only
+    when some file has rows. Returns the next free row."""
+    src = find_verification_sheet(src_wb)
+    rows = _data_rows(src, VERIFY_FIRST_DATA_ROW) if src is not None else []
+    if not rows:
+        return next_row
+    base = verification_sheet(base_wb)
+    base_cols = _header_index(base)
+    col_map = {c: base_cols[h] for h, c in _header_index(src).items() if h in base_cols}
+    serial_col = base_cols.get(norm_header("SERIAL NUMBER"))
+    for r in rows:
+        for src_col, dst_col in col_map.items():
+            cell = src.cell(r, src_col)
+            if cell.value is None:
+                continue
+            if dst_col == serial_col and isinstance(cell.value, int):
+                link_serial(base.cell(next_row, dst_col), bom, cell.value + bom_offset)
+            else:
+                _copy_cell(cell, base.cell(next_row, dst_col))
+        next_row += 1
+    return next_row
+
+
 def combine(files: list[bytes], kind: str, on_progress: Callable[[int], None] | None = None) -> bytes:
     """files: the stored workbooks in the order they should appear. on_progress(n) after each file."""
     if kind not in SHEETS:
@@ -68,13 +95,19 @@ def combine(files: list[bytes], kind: str, on_progress: Callable[[int], None] | 
     names = [name for name, _, _ in SHEETS[kind]]
     sheets = [(_sheet(base, name), first, serial) for name, first, serial in SHEETS[kind]]
     next_rows = [(_data_rows(ws, first) or [first - 1])[-1] + 1 for ws, first, _ in sheets]
+    verify = find_verification_sheet(base) if kind == WORKING else None
+    verify_next = ((_data_rows(verify, VERIFY_FIRST_DATA_ROW) if verify is not None else [])
+                   or [VERIFY_FIRST_DATA_ROW - 1])[-1] + 1
     if on_progress:
         on_progress(1)
 
     for done, content in enumerate(files[1:], start=2):
         wb = openpyxl.load_workbook(io.BytesIO(content))
+        bom_offset = next_rows[0] - BOM_FIRST_DATA_ROW  # BOM rows of the files before this one
         for i, (ws, first, _) in enumerate(sheets):
             next_rows[i] = _append(ws, _sheet(wb, names[i]), first, next_rows[i])
+        if kind == WORKING:
+            verify_next = _append_verification(base, sheets[0][0], wb, bom_offset, verify_next)
         wb.close()
         if on_progress:
             on_progress(done)
@@ -89,6 +122,12 @@ def combine(files: list[bytes], kind: str, on_progress: Callable[[int], None] | 
         _border_table(ws, first, count)
         _black_text(ws, first, count)  # files made before this rule carry the template's red LEN() cells
         ws.freeze_panes = f"A{first}"
+    verify = find_verification_sheet(base) if kind == WORKING else None
+    if verify is not None:
+        if verify_next > VERIFY_FIRST_DATA_ROW:
+            finish_verification(verify, verify_next - VERIFY_FIRST_DATA_ROW)
+        else:
+            base.remove(verify)  # an empty sheet (file made while the sheet was always added) - not kept
 
     # files made before the single-tab fix open grouped (Filter disabled) - keep their active sheet, alone
     set_active_sheet(base, base.active)

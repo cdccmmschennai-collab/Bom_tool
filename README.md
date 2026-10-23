@@ -82,7 +82,10 @@ Tables are created automatically at start-up; plants and country codes are seede
   used (numbering memory, or ManufPartNo of the material master) gets the same number again. Case and extra
   spaces are ignored. From another plant's master rows only 4xxxx / 5xxxxx numbers are reused, never an SAP number.
 * Equipment and spares **never share a number**, even with the same part number (4xxxx vs 5xxxxx).
-* Without a part number the number is reused **per plant** (`NUMBERING_SCOPE=plant`): equipment by TAG NO,
+* Equipment follows the SUBMT rules (docs/logic/Logic_-_SPIR_TAG_vs_SUBMT.txt): manual valve by MESC number,
+  other equipment by EQPT MAKE + EQPT MODEL (both one number in every plant), cabinets by make + model + spares
+  and quantities; the part number is used only when make or model is missing.
+* Otherwise the number is reused **per plant** (`NUMBERING_SCOPE=plant`): equipment (cabinets) by spares or TAG NO,
   spares by SAP no., else SPF no. Set `NUMBERING_SCOPE=plant_type` to share this reuse by all plants of a type.
 * Allocation locks the sequence row in PostgreSQL, so simultaneous uploads never get the same number.
 * Start values: `EQUIPMENT_START`, `SPARE_START` in `.env`.
@@ -109,7 +112,7 @@ its spares (L) in input order.
 | MAINTENANCE PLANNING PLANT | selected plant code, empty if not selected |
 | BASE UNIT OF MEASURE | code part of UNIT OF MEASURE (`NO - NUMBERS` → `NO`) |
 | MANUFACTURERS PART NUMBER | MANUFACTURER PART NUMBER; if longer than 35 → first 35 chars here, full value in CDC_ADD INFORMATION |
-| MANUFACTURER NAME | equipment (row with EQPT QTY): EQPT MAKE, empty when the tag has no equipment row; spare: SUPPLIER/ OCM NAME. Longer than 30 → whole words up to 30, full name in CDC_ADD INFORMATION |
+| MANUFACTURER NAME | equipment (row with EQPT QTY): EQPT MAKE, empty when the tag has no equipment row; the SUPPLIER/ OCM NAME of a spare with the equipment's own part number (the spare is the equipment itself; after a `P/N:` label only the value after it counts) when there is one; spare: SUPPLIER/ OCM NAME. Longer than 30 → whole words up to 30, full name in CDC_ADD INFORMATION |
 | MATERIAL IS AN EQUIPMENT INDICATOR | YES / NO |
 | BOM HEADER NUMBER | temp number of the equipment the line belongs to |
 | QUANTITY | EQPT QTY (equipment) / QUANTITY IDENTICAL PARTS FITTED (spare) |
@@ -123,7 +126,10 @@ its spares (L) in input order.
 | CURRENCY CODE REF | code part of CURRENCY (`QAR - QATAR RIYAL` → `QAR`) |
 | All other columns | left empty, as specified |
 
-**SPIR TAG vs SUBMT** – one row per equipment tag: EQFNR = TAG NO, SUBMT = equipment temp number,
+**SPIR TAG vs SUBMT** – one row per equipment tag (a tag repeated with another equipment gets one row and one BOM
+per equipment; spares go to the nearest equipment row above them): EQFNR = TAG NO, SUBMT = equipment temp number
+(SAP NUMBER if given; else manual valves by MESC number in the description, cabinets by make + model + installed
+spares and quantities, other equipment by make + model, then part number, then tag),
 SPIR NO / REV split from SPIR NO, HERST = EQPT MAKE of the equipment row (full name; empty when the tag has no equipment row), TYPBZ = EQPT MODEL, MAPAR = MANUFACTURER PART NUMBER
 (empty for equipment rows), SERGE = EQPT SR NO, SPIR TYPE (column inserted before REMARKS with the same header
 style), REMARKS empty.
