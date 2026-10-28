@@ -83,8 +83,9 @@ Tables are created automatically at start-up; plants and country codes are seede
   spaces are ignored. From another plant's master rows only 4xxxx / 5xxxxx numbers are reused, never an SAP number.
 * Equipment and spares **never share a number**, even with the same part number (4xxxx vs 5xxxxx).
 * Equipment follows the SUBMT rules (docs/logic/Logic_-_SPIR_TAG_vs_SUBMT.txt): manual valve by MESC number,
-  other equipment by EQPT MAKE + EQPT MODEL (both one number in every plant), cabinets by make + model + spares
-  and quantities; the part number is used only when make or model is missing.
+  other equipment by EQPT MAKE + EQPT MODEL (both one number in every plant), cabinets by make + model + set of
+  spares and their quantities (same parts in other quantities = own SUBMT; `CABINET_COMPARE_QUANTITIES=false` restores
+  the old rule that ignores quantities); the part number is used only when make or model is missing.
 * Otherwise the number is reused **per plant** (`NUMBERING_SCOPE=plant`): equipment (cabinets) by spares or TAG NO,
   spares by SAP no., else SPF no. Set `NUMBERING_SCOPE=plant_type` to share this reuse by all plants of a type.
 * Allocation locks the sequence row in PostgreSQL, so simultaneous uploads never get the same number.

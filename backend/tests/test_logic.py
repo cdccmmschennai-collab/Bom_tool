@@ -538,7 +538,7 @@ def test_cabinet_is_grouped_by_its_spares_not_their_quantities():
             eq(12, "LP-4"), sp(13, "LP-4", "10636722", "0010"),                      # other spare set
             eq(14, "LP-5"), sp(15, "LP-5", "10636722", "0010", qty="5"),             # same set, other quantity
             eq(16, "LP-6"), eq(17, "LP-7")]                                          # no spares -> by tag
-    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}, cabinet_quantities=False)  # old rule
     assert [(t.tag, t.submt) for t in res.tags] == [("LP-1", 40001), ("LP-2", 40001), ("LP-3", 40001),
                                                    ("LP-4", 40002), ("LP-5", 40002), ("LP-6", 40003),
                                                    ("LP-7", 40004)]
@@ -566,7 +566,7 @@ def test_cabinet_make_and_model_with_same_spares_share_a_number():
             eq(3, "MC-2"), sp(4, "MC-2", "fuse "),                 # same make, model, spares, quantity
             eq(5, "MC-3", model="TS9"), sp(6, "MC-3", "FUSE"),     # other model
             eq(7, "MC-4"), sp(8, "MC-4", "FUSE", qty="3")]         # same spares, other quantity -> same
-    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}, cabinet_quantities=False)  # old rule
     assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40001]
 
 
@@ -591,11 +591,106 @@ def test_panels_with_the_same_parts_in_other_quantities_share_a_number():
                 rows.append(InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty,
                                          "MANUFACTURER PART NUMBER": pn}))
             n += 1
-    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {}, cabinet_quantities=False)  # old rule
     assert [(t.tag[:2], t.submt) for t in res.tags] == [("22", 40001), ("23", 40001), ("12", 40002), ("13", 40002),
                                                        ("31", 40003), ("32", 40002), ("32", 40002)]
     # the DIYAB rows with another quantity are reported; the templates keep FAHAHIL's quantities
     assert len([w for w in res.warnings if w.code == "QUANTITY_DIFFERS"][0].lines) == 2 * 4
+
+
+def test_cabinet_quantities_split_the_submt_when_enabled():
+    from app.services.excel_writer import unique_lines
+    from app.services.input_reader import InputRow
+
+    def eq(n, tag, qty="1"):
+        return InputRow(n, {"TAG NO": tag, "EQPT QTY": qty, "NEW DESCRIPTION OF PARTS": "LOCAL PANEL",
+                            "SUPPLIER/ OCM NAME": "ESS"})
+
+    def sp(n, tag, sap, pos, qty="2"):
+        return InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty, "SAP NUMBER": sap,
+                            "POSITION NUMBER": pos})
+
+    rows = [eq(1, "LP-1", "8"), sp(2, "LP-1", "10636722", "0010"), sp(3, "LP-1", "10636723", "0020"),
+            eq(4, "LP-2", "2"), sp(5, "LP-2", "10636722", "0030"), sp(6, "LP-2", "10636723", "0040"),  # same spares
+            eq(7, "LP-3"), sp(8, "LP-3", "10636722", "0010"), sp(9, "LP-3", "10636723", "0020"),
+            sp(10, "LP-3", "10636722", "0090", qty="7"), sp(11, "LP-3", "10636723", "0100"),  # repeat: first qty
+            eq(12, "LP-4"), sp(13, "LP-4", "10636722", "0010"),                      # other spare set
+            eq(14, "LP-5"), sp(15, "LP-5", "10636722", "0010", qty="5"),             # same set, other quantity
+            eq(16, "LP-6"), sp(17, "LP-6", "10636722", "0010", qty="2.0"),           # same quantity, other spelling
+            eq(18, "LP-7"), sp(19, "LP-7", "10636722", "0010", qty=None),            # no quantity
+            eq(20, "LP-8"), eq(21, "LP-9")]                                          # no spares -> by tag
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})  # default: quantities compared
+    assert [(t.tag, t.submt) for t in res.tags] == [("LP-1", 40001), ("LP-2", 40001), ("LP-3", 40001),
+                                                   ("LP-4", 40002), ("LP-5", 40003), ("LP-6", 40002),
+                                                   ("LP-7", 40004), ("LP-8", 40005), ("LP-9", 40006)]
+    # only the repeat inside LP-3 (row 10) still differs; LP-5's other quantity is now its own header
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[10]]
+    out = unique_lines(res.lines)
+    # each configuration is its own BOM with its own quantities
+    assert [(ln.category, ln.temp_number, ln.bom_header_number, ln.quantity) for ln in out] == [
+        ("B", 40001, 40001, 8), ("L", 10636722, 40001, 2), ("L", 10636723, 40001, 2),
+        ("B", 40002, 40002, 1), ("L", 10636722, 40002, 2),
+        ("B", 40003, 40003, 1), ("L", 10636722, 40003, 5),
+        ("B", 40004, 40004, 1), ("L", 10636722, 40004, None),
+        ("B", 40005, 40005, 1), ("B", 40006, 40006, 1)]
+
+
+def test_panels_with_other_quantities_get_their_own_number_when_enabled():
+    """Same RIO panels as above with CABINET_COMPARE_QUANTITIES: DIYAB (about half FAHAHIL's quantities) is split off."""
+    from app.services.input_reader import InputRow
+
+    fahahil = {"1783-CMS10DP": "2", "1786-RG6": "50", "1786-BNC": "4", "D5020S": "6", "ET-498-2TX": "1"}
+    diyab = {"1783-CMS10DP": "1", "1786-RG6": "25", "1786-BNC": "2", "D5020S": "3", "ET-498-2TX": "1"}
+    rows, n = [], 4
+    for place, tags, spares in [("FAHAHIL", ["12-4020-LP-0103", "13-4032-LP-0001"], fahahil),
+                                ("DIYAB", ["32-4001-LP-0001", "32-4002-LP-0001"], diyab)]:
+        for tag in tags:
+            rows.append(InputRow(n, {"TAG NO": tag, "EQPT QTY": "1", "EQPT MAKE": "ROCKWELL AUTOMATION",
+                                     "EQPT MODEL": f"AB' GLM RIO PANEL-{place}", "NEW DESCRIPTION OF PARTS": "RIO PANEL"}))
+            for pn, qty in spares.items():
+                n += 1
+                rows.append(InputRow(n, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty,
+                                         "MANUFACTURER PART NUMBER": pn}))
+            n += 1
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [t.submt for t in res.tags] == [40001, 40001, 40002, 40002]
+    assert not [w for w in res.warnings if w.code == "QUANTITY_DIFFERS"]
+
+
+def test_fgs_cabinets_with_same_spares_other_quantities_get_own_submt():
+    """SPIR VEN-4460-DGTYP-4-43-0004-A: FGS cabinets of one make + model, the same part list everywhere (same spare
+    count) but other quantities per cabinet -> one SUBMT per quantity configuration, each BOM with its own quantities."""
+    from app.services.excel_writer import unique_lines
+    from app.services.input_reader import InputRow
+
+    base = {"10209/2/1": "1", "FC-TDO-1624": "1", "61-2205.0/D": "11", "61-8006.02": "17"}
+    cabinets = [("14A-5227", base),
+                ("12A-4020", {**base, "10209/2/1": "2", "FC-TDO-1624": "2", "61-2205.0/D": "13", "61-8006.02": "19"}),
+                ("13A-4032", {**base, "10209/2/1": "2", "FC-TDO-1624": "2", "61-2205.0/D": "13", "61-8006.02": "19"}),
+                ("22A-4202", {**base, "61-2205.0/D": "10", "61-8006.02": "16"}),
+                ("22A-4203", {**base, "61-2205.0/D": "10", "61-8006.02": "10"}),   # one part differs
+                ("23A-4722", dict(base))]                                           # same as the first
+    rows, n = [], 4
+    for tag, spares in cabinets:
+        rows.append(InputRow(n, {"TAG NO": f"{tag}-FGP-0801", "EQPT QTY": "1", "EQPT MAKE": "HONEYWELL/EAO",
+                                 "EQPT MODEL": "RITTAL CABINET TS8 SERIES",
+                                 "NEW DESCRIPTION OF PARTS": "FGS SYSTEM CABINET", "SPIR NO": "VEN-4460-DGTYP-4-43-0004-REV-A"}))
+        for pn, qty in spares.items():
+            n += 1
+            rows.append(InputRow(n, {"TAG NO": f"{tag}-FGP-0801", "QUANTITY IDENTICAL PARTS FITTED": qty,
+                                     "MANUFACTURER PART NUMBER": pn}))
+        n += 1
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(t.tag[:8], t.submt) for t in res.tags] == [("14A-5227", 40001), ("12A-4020", 40002), ("13A-4032", 40002),
+                                                       ("22A-4202", 40003), ("22A-4203", 40004), ("23A-4722", 40001)]
+    assert all(t.herst == "HONEYWELL/EAO" and t.spir_no == "VEN-4460-DGTYP-4-43-0004" and t.rev == "A" for t in res.tags)
+    assert not [w for w in res.warnings if w.code == "QUANTITY_DIFFERS"]
+    # one BOM block per SUBMT, the spare quantities of its first tag
+    qty = {}
+    for ln in unique_lines(res.lines):
+        if ln.category == "L":
+            qty.setdefault(ln.bom_header_number, []).append(ln.quantity)
+    assert qty == {40001: [1, 1, 11, 17], 40002: [2, 2, 13, 19], 40003: [1, 1, 10, 16], 40004: [1, 1, 10, 10]}
 
 
 def test_tag_repeated_with_other_equipment_gets_its_own_bom():

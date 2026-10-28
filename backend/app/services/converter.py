@@ -57,7 +57,8 @@ def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes
         allocator = DbAllocator(db, numbering_scope(plant_type, plant_code),
                                 scope_plant_codes(db, plant_type, plant_code))
         allocator.job_id = job.id
-        result = build_bom(rows, plant_type, plant_code, allocator, country_map(db), settings.mfr_part_number_max)
+        result = build_bom(rows, plant_type, plant_code, allocator, country_map(db), settings.mfr_part_number_max,
+                           cabinet_quantities=settings.cabinet_compare_quantities)
 
         # both templates: a spare matching a master record (temp number + SPF number) shows its description
         templates = with_master_descriptions(db, result, plant_code)

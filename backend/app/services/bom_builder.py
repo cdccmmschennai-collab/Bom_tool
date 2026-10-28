@@ -346,12 +346,25 @@ def _part_number_review(spare: InputRow, block: _Block, equipment_pns: dict[str,
             f"(tag {own_tag}) has {own_pn or 'no part number'} - check which is right."]
 
 
-def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: list[InputRow]) -> str:
+def _installed_with_quantities(spare_rows: list[InputRow]) -> list[tuple[str, str | None]]:
+    """(spare key, quantity) per installed spare, sorted. A spare repeated under the tag keeps its first quantity,
+    as in the templates; the quantity is normalised ("2" = "2.0"), blank stays None."""
+    first: dict[str, str | None] = {}
+    for s in spare_rows:
+        qty = to_number(s.get("QUANTITY IDENTICAL PARTS FITTED"))
+        first.setdefault(_spare_key(s), None if qty is None else str(qty).strip().upper() or None)
+    return sorted(first.items(), key=lambda kv: (kv[0], kv[1] or ""))
+
+
+def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: list[InputRow],
+                   cabinet_quantities: bool = True) -> str:
     """SUBMT rules (a SAP NUMBER is used before this is called):
     * manual valve  -> one temp number per MESC number in the description (else as other equipment)
-    * cabinet       -> one temp number per make + model + set of installed spares; quantities are not
-                       compared (same parts, other quantities = same cabinet - the templates keep the first
-                       tag's quantities); description + supplier stand in for a missing make / model
+    * cabinet       -> one temp number per make + model + installed spares with their quantities: same parts in
+                       other quantities = another cabinet (key prefix CABINETQ:). cabinet_quantities=False
+                       (setting CABINET_COMPARE_QUANTITIES=false) is the old rule: quantities are not compared
+                       (key prefix CABINET:, the templates keep the first tag's quantities). The two modes never
+                       share numbers. Description + supplier stand in for a missing make / model.
     * other         -> one temp number per make + model; without both, per manufacturer part number
     By tag when none of these can be told, or when the line was built from a spare row."""
     if not has_header:
@@ -362,7 +375,8 @@ def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: li
         if mesc:
             return f"MESC:{mesc}"
     if kind == CABINET:
-        installed = sorted({_spare_key(s) for s in spare_rows})
+        installed: list = (_installed_with_quantities(spare_rows) if cabinet_quantities
+                           else sorted({_spare_key(s) for s in spare_rows}))
         make, model = normalize_part_number(row.get("EQPT MAKE") or ""), base_model(row.get("EQPT MODEL") or "")
         if make and model:
             identity: tuple[str, str] = (make, model)
@@ -371,7 +385,8 @@ def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: li
         else:
             return f"TAG:{tag_key}"
         signature = repr((identity, installed))
-        return "CABINET:" + hashlib.sha1(signature.encode()).hexdigest()
+        prefix = "CABINETQ:" if cabinet_quantities else "CABINET:"
+        return prefix + hashlib.sha1(signature.encode()).hexdigest()
     pn = row.get("MANUFACTURER PART NUMBER")
     return _make_model_key(row, base=True) or (f"PN:{normalize_part_number(pn)}" if pn and pn.strip()
                                                else f"TAG:{tag_key}")
@@ -401,6 +416,7 @@ def build_bom(
     allocator: NumberAllocator,
     country_codes: dict[str, str],
     mfr_pn_max: int = 35,
+    cabinet_quantities: bool = True,
 ) -> BomResult:
     plant_type = plant_type.upper()
     if plant_type not in (DUKHAN, OTHER):
@@ -480,7 +496,7 @@ def build_bom(
         if eq_sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
             eq_temp: int | str = to_int_if_digits(eq_sap)  # type: ignore[assignment]
         else:
-            eq_key = _equipment_key(h, block.number_key, has_header, block.spares)
+            eq_key = _equipment_key(h, block.number_key, has_header, block.spares, cabinet_quantities)
             eq_temp = allocator.equipment(eq_key)
             if has_header and equipment_class(h) == VALVE and not eq_key.startswith("MESC:"):
                 add_warning("VALVE_NO_MESC", "Manual valve(s) without a MESC number in the description - "

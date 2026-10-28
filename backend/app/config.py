@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     #                 (falls back to the plant type when no planning plant is chosen)
     numbering_scope: str = "plant"
 
+    # True (default) -> cabinets with the same spares in other quantities get their own SUBMT;
+    # False -> old rule of 2026-10-23: same spares = same SUBMT whatever the quantities (CABINET_COMPARE_QUANTITIES)
+    cabinet_compare_quantities: bool = True
+
     # sign-in: browser session lasts session_hours; "Remember this device" keeps it for remember_days
     session_hours: int = 12
     remember_days: int = 30

@@ -20,6 +20,7 @@ SUBMT: Refer ouput file sheet "BOM WORKING TEMPLATE", "Material Temp Number" col
     (Decision 2026-10-23: quantities are NOT compared - same parts in other quantities = same SUBMT.)
     Cabinet = description has CABINET / PANEL / ENCLOSURE / CUBICLE / SWITCHBOARD / SWITCHGEAR / MCC.
     Same make + model (location suffix ignored) + same set of spares -> same SUBMT; quantities are not compared (the BOM keeps the first tag's quantities, other quantities are reported as a warning).
+    UPDATE 2026-10-28 (default now): quantities ARE compared - same parts in other quantities -> its own SUBMT and BOM (a spare repeated under one tag counts with its first quantity; "2" = "2.0"). Setting CABINET_COMPARE_QUANTITIES=false restores the 2026-10-23 rule above.
     Without make + model -> description + SUPPLIER/ OCM NAME + spares; without spares either -> by tag.
 
 SPIR NO: Refer to the “SPIR NO” column in the input file. If the value contains a revision suffix, such as “VEN-4391-M3TY-2-43-0003-REV-A”, capture only the base SPIR number “VEN-4391-M3TY-2-43-0003” in the output file. Do not include any revision information (e.g., “-REV-A”).
