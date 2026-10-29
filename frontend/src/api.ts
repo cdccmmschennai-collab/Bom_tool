@@ -79,11 +79,12 @@ export const api = {
     request<Plant[]>(plantType ? `/api/plants?plant_type=${encodeURIComponent(plantType)}` : "/api/plants"),
 
   /** `onUploadProgress` (0..1) reports the upload; the conversion itself runs after it reaches 1. */
-  convert: (params: { plantType: PlantType; plantId: number | null; file: File;
+  convert: (params: { plantType: PlantType; plantId: number | null; projectNo?: string; file: File;
                       onUploadProgress?: (fraction: number) => void }) => {
     const form = new FormData();
     form.append("plant_type", params.plantType);
     if (params.plantId) form.append("plant_id", String(params.plantId));
+    if (params.projectNo) form.append("project_number", params.projectNo);
     form.append("file", params.file);
     return params.onUploadProgress
       ? upload<Job>("/api/jobs", form, params.onUploadProgress)

@@ -47,10 +47,18 @@ def plants(client, plant_type):
     return client.get("/api/plants", params={"plant_type": plant_type}).json()
 
 
-def upload(client, sample_bytes, plant_type, plant_id=None, name="sample.xlsx"):
+FIRST = "first"  # upload(): the first plant of the type (plant and project number are required)
+
+
+def upload(client, sample_bytes, plant_type, plant_id=FIRST, name="sample.xlsx", project_number="PRJ1"):
     data = {"plant_type": plant_type}
+    if plant_id == FIRST:
+        found = plants(client, plant_type) if plant_type in ("DUKHAN", "OTHER") else []
+        plant_id = found[0]["id"] if found else None
     if plant_id:
         data["plant_id"] = str(plant_id)
+    if project_number is not None:
+        data["project_number"] = project_number
     return client.post("/api/jobs", data=data, files={"file": (name, sample_bytes, "application/octet-stream")})
 
 
@@ -121,7 +129,7 @@ def test_concurrent_uploads_never_share_numbers(client, sample_bytes):
                         row[c].value = f"{row[c].value}-C{i}"
         buf = io.BytesIO()
         wb.save(buf)
-        return upload(client, buf.getvalue(), "OTHER", ot["id"]).json()["id"]
+        return upload(client, buf.getvalue(), "OTHER", ot["id"], project_number=f"CONC{i}").json()["id"]
 
     with ThreadPoolExecutor(4) as ex:
         ids = list(ex.map(run, range(4)))
@@ -142,15 +150,50 @@ def test_validation_errors(client, sample_bytes):
     assert any(j["status"] == "FAILED" for j in hist["items"])
 
 
-def test_no_plant_selected_leaves_column_empty(client, sample_bytes):
-    job = upload(client, sample_bytes, "OTHER").json()
-    ws = output_sheet(client, job["id"])
-    assert ws["I6"].value is None and ws["I7"].value is None
-    assert client.get(f"/api/jobs/{job['id']}/input").status_code == 200
+def test_plant_and_project_number_are_required(client, sample_bytes):
+    r = upload(client, sample_bytes, "OTHER", plant_id=None)
+    assert r.status_code == 422 and "planning plant" in r.json()["detail"]
+    for missing in (None, "", "   "):
+        r = upload(client, sample_bytes, "OTHER", project_number=missing)
+        assert r.status_code == 422 and "Project number is required" in r.json()["detail"], missing
 
 
 def test_job_records_signed_in_user(client, sample_bytes):
     assert upload(client, sample_bytes, "OTHER").json()["user_name"] == "Test User"
+
+
+def test_project_number_is_stored(client, sample_bytes):
+    r = upload(client, sample_bytes, "OTHER", project_number=" PRJ2026A01 ")
+    assert r.status_code == 201, r.text
+    assert r.json()["project_number"] == "PRJ2026A01"
+    found = client.get("/api/jobs", params={"search": "PRJ2026A01"}).json()
+    assert [j["id"] for j in found["items"]] == [r.json()["id"]]
+
+
+def test_numbers_reused_only_for_same_plant_and_project(client, sample_bytes):
+    def temps(job_id):
+        ws = output_sheet(client, job_id)
+        col = next(c.column for c in ws[1] if str(c.value).strip().upper() == "MATERIAL TEMP NUMBER")
+        return [ws.cell(r, col).value for r in range(6, ws.max_row + 1) if ws.cell(r, col).value is not None]
+
+    def generated(numbers):  # 4xxxx / 5xxxxx from the counters (SAP numbers are the materials' own numbers)
+        return {n for n in numbers if isinstance(n, int) and n < 1_000_000}
+
+    dk = plants(client, "DUKHAN")
+    first = temps(upload(client, sample_bytes, "DUKHAN", dk[0]["id"], project_number="REUSEA").json()["id"])
+    again = temps(upload(client, sample_bytes, "DUKHAN", dk[0]["id"], project_number="reusea").json()["id"])
+    assert again == first                                                 # same plant + project -> reused
+    other_project = temps(upload(client, sample_bytes, "DUKHAN", dk[0]["id"], project_number="REUSEB").json()["id"])
+    assert generated(first) and not generated(first) & generated(other_project)  # same plant, other project -> new
+    ot = plants(client, "OTHER")[0]
+    other_plant = temps(upload(client, sample_bytes, "OTHER", ot["id"], project_number="REUSEA").json()["id"])
+    assert not generated(first) & generated(other_plant)                 # other plant, same project -> new
+    assert not generated(other_project) & generated(other_plant)
+
+
+def test_project_number_must_be_alphanumeric_max_25(client, sample_bytes):
+    for bad in ("AB-12", "AB 12", "A" * 26):
+        assert upload(client, sample_bytes, "OTHER", project_number=bad).status_code == 422, bad
 
 
 def test_api_requires_sign_in(client):

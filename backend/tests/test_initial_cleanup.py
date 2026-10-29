@@ -33,7 +33,7 @@ def login(c, username):
 
 
 def upload(c, sample_bytes, plant):
-    r = c.post("/api/jobs", data={"plant_type": plant.plant_type, "plant_id": str(plant.id)},
+    r = c.post("/api/jobs", data={"plant_type": plant.plant_type, "plant_id": str(plant.id), "project_number": "P1"},
                files={"file": ("in.xlsx", sample_bytes, "application/octet-stream")})
     assert r.status_code == 201, r.text
     return r.json()["id"]
@@ -74,7 +74,7 @@ def setup(sample_bytes):
         # the tester's data from before the cleanup existed (created without going through the API hook)
         with SessionLocal() as db:
             old_job = convert(db, plant_type="DUKHAN", plant=dukhan, content=sample_bytes, filename="old.xlsx",
-                              user_name="Tester").id
+                              user_name="Tester", project_number="P1").id
         # a master row imported outside the app, in its own transaction
         with engine.begin() as conn:
             conn.execute(insert(master).values(material_temp_number=IMPORTED_TEMP, maintenance_planning_plant=dukhan.code,

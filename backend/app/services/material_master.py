@@ -60,11 +60,15 @@ def with_master_descriptions(db: Session, result: BomResult, plant_code: str | N
     return replace(result, lines=[described(ln) for ln in result.lines])
 
 
-def save_to_master(db: Session, result: BomResult, plant_code: str | None) -> int:
-    """Insert the new lines; returns how many rows were added."""
+def save_to_master(db: Session, result: BomResult, plant_code: str | None, project_number: str | None = None) -> int:
+    """Insert the new lines with their plant + project (numbers are reused only for the same plant + project);
+    a temp number already in the master for that plant + project is not added again. Returns the rows added."""
     plant = master.c.maintenance_planning_plant
+    project = (project_number or "").strip().upper() or None
+    project_col = func.upper(func.trim(master.c.project_number))
     known = set(db.scalars(
-        select(master.c.material_temp_number).where(plant == plant_code if plant_code else plant.is_(None))
+        select(master.c.material_temp_number).where(plant == plant_code if plant_code else plant.is_(None),
+                                                    project_col == project if project else project_col.is_(None))
     ))
     rows = []
     for line in result.lines:
@@ -87,6 +91,7 @@ def save_to_master(db: Session, result: BomResult, plant_code: str | None) -> in
             "reorder_point_minimum_qty": _qty(line.min_qty),
             "maximum_stock_level_max_qty": _qty(line.max_qty),
             "sap_material_number": _str(line.sap_material_number),
+            "project_number": project,
         })
     if rows:
         db.execute(insert(master), rows)

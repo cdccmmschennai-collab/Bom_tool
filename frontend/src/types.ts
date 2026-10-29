@@ -30,6 +30,7 @@ export interface Job {
   created_at: string;
   plant_type: PlantType;
   plant_code: string | null;
+  project_number: string | null;
   user_name: string | null;
   status: "SUCCESS" | "FAILED";
   error: string | null;

@@ -41,7 +41,7 @@ def client():
 @pytest.fixture(scope="module")
 def job(client, sample_bytes):
     dk = client.get("/api/plants", params={"plant_type": "DUKHAN"}).json()[0]
-    r = client.post("/api/jobs", data={"plant_type": "DUKHAN", "plant_id": str(dk["id"])},
+    r = client.post("/api/jobs", data={"plant_type": "DUKHAN", "plant_id": str(dk["id"]), "project_number": "P1"},
                     files={"file": ("in.xlsx", sample_bytes, "application/octet-stream")})
     assert r.status_code == 201, r.text
     with engine.begin() as conn:

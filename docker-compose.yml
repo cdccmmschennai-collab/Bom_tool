@@ -21,7 +21,6 @@ services:
       # DOCKER_DATABASE_URL (in .env) points the backend at another PostgreSQL server, e.g. the one on the
       # host machine: postgresql+psycopg://USER:PASSWORD@host.docker.internal:5432/DBNAME (URL-encode the password)
       DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-bom}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-spir_bom_tool}}
-      NUMBERING_SCOPE: ${NUMBERING_SCOPE:-plant}
       CABINET_COMPARE_QUANTITIES: ${CABINET_COMPARE_QUANTITIES:-true}
       EQUIPMENT_START: ${EQUIPMENT_START:-40001}
       SPARE_START: ${SPARE_START:-500001}

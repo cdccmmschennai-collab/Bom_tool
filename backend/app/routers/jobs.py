@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -29,7 +30,8 @@ log = logging.getLogger(__name__)
 @router.post("", response_model=JobOut, status_code=201)
 async def create_job(
     plant_type: str = Form(..., description="DUKHAN or OTHER"),
-    plant_id: int | None = Form(None, description="Maintenance planning plant (optional)"),
+    plant_id: int | None = Form(None, description="Maintenance planning plant (required)"),
+    project_number: str | None = Form(None, description="Project number (required, alphanumeric, max 25)"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
@@ -38,13 +40,20 @@ async def create_job(
     if plant_type not in ("DUKHAN", "OTHER"):
         raise HTTPException(422, "Plant type must be DUKHAN or OTHER.")
 
-    plant = None
-    if plant_id:
-        plant = db.get(Plant, plant_id)
-        if plant is None or not plant.active:
-            raise HTTPException(422, "Selected planning plant does not exist.")
-        if plant.plant_type != plant_type:
-            raise HTTPException(422, f"Planning plant {plant.code} does not belong to plant type {plant_type}.")
+    # temp numbers are reused only for the same plant + project, so both are required
+    if not plant_id:
+        raise HTTPException(422, "Select a maintenance planning plant.")
+    plant = db.get(Plant, plant_id)
+    if plant is None or not plant.active:
+        raise HTTPException(422, "Selected planning plant does not exist.")
+    if plant.plant_type != plant_type:
+        raise HTTPException(422, f"Planning plant {plant.code} does not belong to plant type {plant_type}.")
+
+    project_number = (project_number or "").strip() or None
+    if not project_number:
+        raise HTTPException(422, "Project number is required (letters and digits, max 25 characters).")
+    if not re.fullmatch(r"[A-Za-z0-9]{1,25}", project_number):
+        raise HTTPException(422, "Project number must be alphanumeric, max 25 characters.")
 
     name = file.filename or "input.xlsx"
     if not name.lower().endswith((".xlsx", ".xlsm")):
@@ -61,7 +70,8 @@ async def create_job(
 
     try:
         return convert(db, plant_type=plant_type, plant=plant, content=content, filename=name,
-                       user_name=user.display_name)  # history shows the signed-in user
+                       user_name=user.display_name,  # history shows the signed-in user
+                       project_number=project_number)
     except (InputFileError, TemplateError) as exc:
         raise HTTPException(422, str(exc)) from exc
     except ConversionFailed as exc:
@@ -82,6 +92,7 @@ def list_jobs(
         like = f"%{search.strip()}%"
         q = q.where(ConversionJob.input_filename.ilike(like) | ConversionJob.output_filename.ilike(like)
                     | ConversionJob.user_name.ilike(like) | ConversionJob.plant_code.ilike(like)
+                    | ConversionJob.project_number.ilike(like)
                     | cast(ConversionJob.spir_numbers, String).ilike(like))
     if date_from:
         q = q.where(ConversionJob.created_at >= date_from)

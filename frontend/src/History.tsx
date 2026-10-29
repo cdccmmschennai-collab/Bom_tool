@@ -399,7 +399,7 @@ Its files are removed. The material temp numbers it issued stay in the material 
                   <input ref={pageCheck} type="checkbox" aria-label="Select all completed conversions on this page"
                          checked={pageAll} disabled={!selectable.length || combining} onChange={togglePage} />
                 </th>
-                <th>SPIR name</th><th className="num">Total tags</th><th>Plant</th><th>User</th>
+                <th>SPIR name</th><th className="num">Total tags</th><th>Plant</th><th>Project</th><th>User</th>
                 <th>Date &amp; time</th><th>Status</th><th className="act">Action</th>
               </tr>
             </thead>
@@ -429,6 +429,7 @@ Its files are removed. The material temp numbers it issued stay in the material 
                     <strong>{j.plant_code ?? "—"}</strong>
                     <span className="sub">{j.plant_type === "DUKHAN" ? "Dukhan" : "Other plant"}</span>
                   </td>
+                  <td>{j.project_number ?? "—"}</td>
                   <td>{j.user_name ?? "—"}</td>
                   <td className="nowrap">{formatDate(j.created_at)}</td>
                   <td><StatusBadge job={j} /></td>
@@ -444,7 +445,7 @@ Its files are removed. The material temp numbers it issued stay in the material 
                 </tr>
               ))}
               {!loading && items.length === 0 && (
-                <tr><td colSpan={8} className="empty">
+                <tr><td colSpan={9} className="empty">
                   {filtered ? "No conversions match these filters." : "No conversions yet."}
                 </td></tr>
               )}

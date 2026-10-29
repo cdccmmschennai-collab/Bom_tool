@@ -40,7 +40,8 @@ def plant(client, plant_type):
 
 
 def convert(client, content, plant_type):
-    r = client.post("/api/jobs", data={"plant_type": plant_type, "plant_id": str(plant(client, plant_type)["id"])},
+    r = client.post("/api/jobs", data={"plant_type": plant_type, "plant_id": str(plant(client, plant_type)["id"]),
+                                       "project_number": "P1"},
                     files={"file": ("in.xlsx", content, "application/octet-stream")})
     assert r.status_code == 201, r.text
     return r.json()
@@ -118,7 +119,8 @@ def test_combine_validation(client, sample_bytes, two_jobs):
     other = convert(client, renamed_tags(sample_bytes, "O"), "OTHER")
     r = post({"job_ids": [ids[0], other["id"]], "kind": "WORKING"})
     assert r.status_code == 422 and "plant type" in r.json()["detail"]
-    bad = client.post("/api/jobs", data={"plant_type": "DUKHAN"},
+    bad = client.post("/api/jobs", data={"plant_type": "DUKHAN", "plant_id": str(plant(client, "DUKHAN")["id"]),
+                                         "project_number": "P1"},
                       files={"file": ("bad.xlsx", b"not excel", "application/octet-stream")})
     assert bad.status_code == 422
     failed = client.get("/api/jobs", params={"limit": 1}).json()["items"][0]

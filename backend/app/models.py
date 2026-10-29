@@ -60,8 +60,9 @@ class MaterialNumber(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scope: Mapped[str] = mapped_column(String(30))
     kind: Mapped[str] = mapped_column(String(10))
-    # PN:<part number> / MESC:<number> / MM:<make>|<model> (scope "ALL", every plant), else CABINET:<hash> or
-    # TAG:<tag> for equipment / SAP:, SPF:, DESC: for spares
+    # scope = "<plant>|<PROJECT>": a number is reused only within the same plant + project
+    # PN:<part number> / MESC:<number> / MM:<make>|<model> / CABINET(Q):<hash> / TAG:<tag> for equipment,
+    # PN:, SAP:, SPF:, DESC: for spares
     item_key: Mapped[str] = mapped_column(Text)  # a part / SAP / SPF number of any length
     temp_number: Mapped[int] = mapped_column(BigInteger)
     first_job_id: Mapped[int | None] = mapped_column(ForeignKey("conversion_jobs.id"), nullable=True)
@@ -76,6 +77,7 @@ class ConversionJob(Base):
     plant_type: Mapped[str] = mapped_column(String(10))
     plant_id: Mapped[int | None] = mapped_column(ForeignKey("plants.id"), nullable=True)
     plant_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    project_number: Mapped[str | None] = mapped_column(String(25), nullable=True)  # optional, alphanumeric
     user_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(10))  # SUCCESS | FAILED
     error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -196,4 +198,5 @@ material_master_import = Table(
     Column("reorder_point_minimum_qty", Numeric),
     Column("maximum_stock_level_max_qty", Numeric),
     Column("sap_material_number", Text),
+    Column("project_number", String(25)),  # numbers are reused only for the same plant + project
 )

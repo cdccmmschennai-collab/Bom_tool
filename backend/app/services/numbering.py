@@ -1,54 +1,47 @@
 """Material Temp Number allocation stored in PostgreSQL.
 
-* A new temp number is never one that was already issued, in any plant: there is one running sequence per
-  kind (equipment / spare) for all plants, and it always continues after the highest number already in the
+* A temp number is reused ONLY for the same Maintenance Planning Plant + Project Number: an item (part number,
+  MESC number, make + model, cabinet signature, tag, SAP / SPF number, description) seen before in that plant and
+  project - numbering memory under scope "<plant>|<PROJECT>", or a material master row with the same plant and
+  project - gets the same number again. The same plant with another project, or another plant, gets a new number.
+* A new temp number is never one that was already issued, in any plant or project: there is one running sequence
+  per kind (equipment / spare) for everything, and it always continues after the highest number already in the
   material master (material_master_import) - gaps and duplicate values there are ignored.
-* One manufacturer part number = one temp number, for equipment and spares, across ALL plants: a part
-  number seen before (numbering memory under scope "ALL", or manufacturers_part_number in the master)
-  gets the same number again. From another plant's master rows only numbers in the kind's own temp range
-  are taken, so an SAP number stored there is never handed to a Dukhan line.
 * Equipment and spares never share a number, even with the same part number: each kind is looked up only
   among its own kind (memory and master) and numbered from its own counter (4xxxx / 5xxxxx).
-* Equipment keyed by MESC number (manual valves) or make + model is likewise one number for all plants.
-* Every other key is reused per numbering scope (plant based - see Settings.numbering_scope): equipment
-  by cabinet signature or tag, spares without a part number by SAP / SPF number or description.
 * The sequence row is locked (SELECT ... FOR UPDATE) for the whole conversion, so two users
   converting at the same time can never receive the same number.
 """
 from __future__ import annotations
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import MaterialNumber, NumberSequence, Plant, material_master_import as master
+from ..models import MaterialNumber, NumberSequence, material_master_import as master
 
 EQUIPMENT = "EQUIPMENT"
 SPARE = "SPARE"
-SEQUENCE_SCOPE = "ALL"  # new numbers come from one sequence per kind, shared by every plant
-GLOBAL_KEY_PREFIXES = ("PN:", "MESC:", "MM:")  # keys reused in every plant (memory under scope "ALL")
+SEQUENCE_SCOPE = "ALL"  # new numbers come from one sequence per kind, shared by every plant and project
 
 
-def numbering_scope(plant_type: str, plant_code: str | None) -> str:
-    if get_settings().numbering_scope == "plant" and plant_code:
-        return f"{plant_type}:{plant_code}"
-    return plant_type
+def normalize_project(project_number: str) -> str:
+    return project_number.strip().upper()
 
 
-def scope_plant_codes(db: Session, plant_type: str, plant_code: str | None) -> list[str]:
-    """Planning plants whose material master rows share the numbering scope."""
-    if get_settings().numbering_scope == "plant" and plant_code:
-        return [plant_code]
-    return list(db.scalars(select(Plant.code).where(Plant.plant_type == plant_type)))
+def numbering_scope(plant_code: str, project_number: str) -> str:
+    """Numbering memory scope: '<plant>|<PROJECT>' (max 4 + 1 + 25 = 30 characters)."""
+    return f"{plant_code}|{normalize_project(project_number)}"
 
 
 class DbAllocator:
-    def __init__(self, db: Session, scope: str, plant_codes: list[str] | None = None):
+    def __init__(self, db: Session, plant_code: str, project_number: str):
         s = get_settings()
         self.db = db
-        self.scope = scope
-        self.plant_codes = plant_codes or []
+        self.plant_code = plant_code
+        self.project = normalize_project(project_number)
+        self.scope = numbering_scope(plant_code, project_number)
         self.start = {EQUIPMENT: s.equipment_start, SPARE: s.spare_start}
         self._cache: dict[tuple[str, str], int] = {}
         self._seq: dict[str, NumberSequence] = {}
@@ -56,8 +49,10 @@ class DbAllocator:
         self.job_id: int | None = None
 
     def _master_rows(self, kind: str):
+        """Master rows of the same plant + project and the same kind (equipment / spare)."""
         is_eq = master.c.material_is_equipment_indicator
-        return (master.c.maintenance_planning_plant.in_(self.plant_codes),
+        return (master.c.maintenance_planning_plant == self.plant_code,
+                func.upper(func.trim(master.c.project_number)) == self.project,
                 is_eq.is_(True) if kind == EQUIPMENT else is_eq.is_not(True))
 
     def _in_range(self, kind: str):
@@ -73,25 +68,19 @@ class DbAllocator:
         return self.db.execute(select(func.max(temp)).where(*self._in_range(kind))).scalar()
 
     def _master_number(self, kind: str, key: str) -> int | None:
-        """Temp number already in the master for this item. Part numbers (equipment and spares) are looked up
-        in every plant - another plant's row only when its number is in the kind's range; SAP / SPF numbers
-        (spares without a part number) only in the scope's plants. The lowest number wins, so a real
-        4xxxx / 5xxxxx number beats an SAP number."""
+        """Temp number already in the master for this item - only from rows of the same plant + project.
+        Part numbers for equipment and spares, SAP / SPF numbers for spares without a part number. The lowest
+        number wins, so a real 4xxxx / 5xxxxx number beats an SAP number."""
         prefix, _, value = key.partition(":")
         temp = master.c.material_temp_number
         if prefix == "PN":
-            is_eq = master.c.material_is_equipment_indicator
             column = func.upper(func.regexp_replace(func.trim(master.c.manufacturers_part_number), r"\s+", " ", "g"))
-            rows = (is_eq.is_(True) if kind == EQUIPMENT else is_eq.is_not(True),
-                    or_(master.c.maintenance_planning_plant.in_(self.plant_codes), and_(*self._in_range(kind))))
-        else:
-            if kind != SPARE or not self.plant_codes:
-                return None
+        elif kind == SPARE and prefix in ("SAP", "SPF"):
             column = {"SAP": master.c.sap_material_number,
-                      "SPF": func.upper(master.c.old_material_number_spf_number)}.get(prefix)
-            if column is None:
-                return None
-            rows = self._master_rows(kind)
+                      "SPF": func.upper(master.c.old_material_number_spf_number)}[prefix]
+        else:
+            return None
+        rows = self._master_rows(kind)
         return self.db.execute(
             select(temp).where(*rows, column == value, temp.is_not(None)).order_by(temp).limit(1)
         ).scalar()
@@ -119,8 +108,7 @@ class DbAllocator:
         if cache_key in self._cache:
             return self._cache[cache_key]
         seq = self._sequence(kind)  # lock first, then look up -> no race between lookup and insert
-        # part numbers, MESC numbers and make + model: one number for all plants
-        scope = SEQUENCE_SCOPE if key.startswith(GLOBAL_KEY_PREFIXES) else self.scope
+        scope = self.scope  # every key: reused only within the same plant + project
         existing = self.db.execute(
             select(MaterialNumber.temp_number).where(
                 MaterialNumber.scope == scope, MaterialNumber.kind == kind, MaterialNumber.item_key == key)

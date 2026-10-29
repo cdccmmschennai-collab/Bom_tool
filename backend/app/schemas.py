@@ -32,6 +32,7 @@ class JobOut(BaseModel):
     created_at: datetime
     plant_type: str
     plant_code: str | None
+    project_number: str | None = None
     user_name: str | None
     status: str
     error: str | None

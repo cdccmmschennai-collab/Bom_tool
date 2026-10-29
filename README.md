@@ -7,8 +7,8 @@ Web tool that converts a **SPIR extraction** Excel file into the **BOM WORKING T
 * **Backend** – Python 3.12, FastAPI, SQLAlchemy 2, openpyxl
 * **Database** – PostgreSQL 16
 
-User flow: select **Plant type** (Dukhan / Other) → optionally select **Maintenance planning plant** →
-upload the SPIR extraction (.xlsx) → download the filled template. Every conversion (input + output file)
+User flow: select **Plant type** (Dukhan / Other) → select **Maintenance planning plant** and enter the
+**Project number** (both required) → upload the SPIR extraction (.xlsx) → download the filled template. Every conversion (input + output file)
 is kept in the history, visible to all users. There is no admin screen.
 
 ---
@@ -76,18 +76,18 @@ Tables are created automatically at start-up; plants and country codes are seede
 | Equipment (B) | SAP NUMBER if present, else next from **40001** | SAP NUMBER if present, else next from **40001** |
 | Spare (L) | SAP NUMBER if present, else next from **500001** | SAP NUMBER if present, else next from **500001** |
 
-* New numbers come from **one running counter per kind** (equipment / spare) shared by all plants. It always
-  continues after the highest number in the material master, so a number is never issued twice.
-* **One MANUFACTURER PART NUMBER = one number, in every plant** (equipment and spares): a part number already
-  used (numbering memory, or ManufPartNo of the material master) gets the same number again. Case and extra
-  spaces are ignored. From another plant's master rows only 4xxxx / 5xxxxx numbers are reused, never an SAP number.
+* **A number is reused only for the same Maintenance planning plant + Project number.** An item already numbered
+  in that plant and project (numbering memory, or a material master row with the same plant and project) gets the
+  same number again. The same plant with another project, or another plant, gets a **new** number. Master rows
+  without a project number (imported before this rule) are not reused.
+* New numbers come from **one running counter per kind** (equipment / spare) shared by all plants and projects. It
+  always continues after the highest number in the material master, so a number is never issued twice.
+* What counts as "the same item": spares by MANUFACTURER PART NUMBER (case and extra spaces ignored), else SAP no.,
+  else SPF no.; equipment by the SUBMT rules (docs/logic/Logic_-_SPIR_TAG_vs_SUBMT.txt): manual valve by MESC number,
+  other equipment by EQPT MAKE + EQPT MODEL, cabinets by make + model + set of spares and their quantities (same
+  parts in other quantities = own SUBMT; `CABINET_COMPARE_QUANTITIES=false` restores the old rule that ignores
+  quantities); the part number is used only when make or model is missing, then the TAG NO.
 * Equipment and spares **never share a number**, even with the same part number (4xxxx vs 5xxxxx).
-* Equipment follows the SUBMT rules (docs/logic/Logic_-_SPIR_TAG_vs_SUBMT.txt): manual valve by MESC number,
-  other equipment by EQPT MAKE + EQPT MODEL (both one number in every plant), cabinets by make + model + set of
-  spares and their quantities (same parts in other quantities = own SUBMT; `CABINET_COMPARE_QUANTITIES=false` restores
-  the old rule that ignores quantities); the part number is used only when make or model is missing.
-* Otherwise the number is reused **per plant** (`NUMBERING_SCOPE=plant`): equipment (cabinets) by spares or TAG NO,
-  spares by SAP no., else SPF no. Set `NUMBERING_SCOPE=plant_type` to share this reuse by all plants of a type.
 * Allocation locks the sequence row in PostgreSQL, so simultaneous uploads never get the same number.
 * Start values: `EQUIPMENT_START`, `SPARE_START` in `.env`.
 

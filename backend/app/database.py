@@ -26,6 +26,9 @@ def get_db() -> Iterator[Session]:
 _ADDED_COLUMNS = [
     "ALTER TABLE conversion_jobs ADD COLUMN IF NOT EXISTS submission_filename VARCHAR(255)",
     "ALTER TABLE conversion_jobs ADD COLUMN IF NOT EXISTS submission_file BYTEA",
+    "ALTER TABLE conversion_jobs ADD COLUMN IF NOT EXISTS project_number VARCHAR(25)",
+    # temp numbers are reused only for the same plant + project; older master rows have no project (NULL)
+    "ALTER TABLE material_master_import ADD COLUMN IF NOT EXISTS project_number VARCHAR(25)",
     # SPIR descriptions can run to well over 1000 characters (multi-line spec text); no length limit here
     *(f"ALTER TABLE extracted_lines ALTER COLUMN {col} TYPE TEXT"
       for col in ("tag", "old_material_number", "description", "mfr_part_number", "mfr_name", "spir_number",

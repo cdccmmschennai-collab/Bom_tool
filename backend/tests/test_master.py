@@ -30,11 +30,11 @@ def db():
         yield s
 
 
-def add_master(db, plant, temp, equipment, sap=None, spf=None, pn=None):
+def add_master(db, plant, temp, equipment, sap=None, spf=None, pn=None, project="P1"):
     db.execute(insert(master).values(
         material_temp_number=temp, maintenance_planning_plant=plant, material_is_equipment_indicator=equipment,
         material_type_category="B" if equipment else "L", sap_material_number=sap,
-        old_material_number_spf_number=spf, manufacturers_part_number=pn))
+        old_material_number_spf_number=spf, manufacturers_part_number=pn, project_number=project))
 
 
 def test_numbering_continues_after_master(db):
@@ -44,7 +44,7 @@ def test_numbering_continues_after_master(db):
     add_master(db, "T2", 40500, True)                       # other plant - counts too (no duplicates)
     add_master(db, "T2", 40500, True)                       # duplicate value - ignored
     add_master(db, "T2", 500030, False)
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    alloc = DbAllocator(db, "T1", "P1")
     assert alloc.equipment("TAG:NEW") == 40501
     assert alloc.spare("DESC:NEW") == 500031
 
@@ -53,77 +53,94 @@ def test_spare_reuses_master_number(db):
     add_master(db, "T1", 500005, False, sap="123")
     add_master(db, "T1", 500006, False, spf="ABC-1")
     add_master(db, "T2", 500007, False, spf="XYZ")
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    add_master(db, "T1", 500008, False, spf="PRJ2", project="P2")
+    add_master(db, "T1", 500009, False, spf="NOPRJ", project=None)  # imported before projects existed
+    alloc = DbAllocator(db, "T1", " p1 ")                           # case and spaces of the project ignored
     assert alloc.spare("SAP:123") == 500005
     assert alloc.spare("SPF:ABC-1") == 500006
-    assert alloc.spare("SPF:XYZ") == 500008  # only found for plant T2 -> new number after the highest
-    assert alloc.new_numbers == 1
+    assert alloc.spare("SPF:XYZ") == 500010    # only found for plant T2 -> new number after the highest
+    assert alloc.spare("SPF:PRJ2") == 500011   # same plant, other project -> new
+    assert alloc.spare("SPF:NOPRJ") == 500012  # same plant, no project -> new
+    assert alloc.new_numbers == 3
 
 
 def test_save_to_master_adds_new_lines_once(db, sample_bytes):
     result = build_bom(read_input(sample_bytes), DUKHAN, "T1", InMemoryAllocator(), {})
     temps = {line.temp_number for line in result.lines}
-    assert save_to_master(db, result, "T1") == len(temps)
-    assert save_to_master(db, result, "T1") == 0  # same upload again -> nothing new
+    assert save_to_master(db, result, "T1", "P1") == len(temps)
+    assert save_to_master(db, result, "T1", "p1") == 0  # same plant + project again -> nothing new
+    assert save_to_master(db, result, "T1", "P2") == len(temps)  # another project has its own rows
     count = db.execute(select(func.count()).select_from(master)
-                       .where(master.c.maintenance_planning_plant == "T1")).scalar()
+                       .where(master.c.maintenance_planning_plant == "T1", master.c.project_number == "P1")).scalar()
     assert count == len(temps)
-    eq = db.execute(select(master).where(master.c.material_temp_number == 40001)).one()
+    eq = db.execute(select(master).where(master.c.material_temp_number == 40001, master.c.project_number == "P1")).one()
     assert eq.material_type_category == "B" and eq.material_is_equipment_indicator is True
 
 
 def test_spare_reuses_master_number_by_part_number(db):
-    db.execute(insert(master).values(material_temp_number=500010, maintenance_planning_plant="T1",
+    db.execute(insert(master).values(material_temp_number=500010, maintenance_planning_plant="T1", project_number="P1",
                                      material_is_equipment_indicator=False, manufacturers_part_number="1SBL  137001r1110"))
     add_master(db, "T1", 500020, False)
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    alloc = DbAllocator(db, "T1", "P1")
     assert alloc.spare("PN:1SBL 137001R1110") == 500010
     assert alloc.spare("PN:NEW-PART") == 500021
     db.commit()
-    again = DbAllocator(db, "DUKHAN:T1", ["T1"])  # next upload
+    again = DbAllocator(db, "T1", "P1")  # next upload
     assert again.spare("PN:NEW-PART") == 500021
     assert again.spare("PN:OTHER-PART") == 500022
 
-def test_part_number_reuses_the_number_in_every_plant(db):
-    t1 = DbAllocator(db, "DUKHAN:T1", ["T1"])
-    eq, sp = t1.equipment("PN:JB82"), t1.spare("PN:O-RING 1")
-    t2 = DbAllocator(db, "OTHER:T2", ["T2"])                  # another plant, later conversion
-    assert t2.equipment("PN:JB82") == eq and t2.spare("PN:O-RING 1") == sp
-    assert t2.new_numbers == 0
+def test_numbers_are_reused_only_for_the_same_plant_and_project(db):
+    keys = [("equipment", "PN:JB82"), ("equipment", "MESC:7410211041"), ("equipment", "MM:ABB|RIO PANEL"),
+            ("spare", "PN:O-RING 1"), ("spare", "SPF:ABC-1")]
+
+    def numbers(plant, project):
+        alloc = DbAllocator(db, plant, project)
+        return [getattr(alloc, kind)(key) for kind, key in keys]
+
+    first = numbers("T1", "P1")
+    db.commit()
+    assert numbers("T1", "p1") == first                          # same plant + project -> reused
+    other_project = numbers("T1", "P2")                          # same plant, other project -> new
+    other_plant = numbers("T2", "P1")                            # other plant, same project -> new
+    every = first + other_project + other_plant
+    assert len(set(every)) == len(every)                         # a number is never issued twice
 
 
-def test_part_number_found_in_another_plants_master(db):
+def test_part_number_in_another_plants_master_is_not_reused(db):
     add_master(db, "T2", 40100, True, pn=" ex-cell  t3 ")       # equipment row of plant T2
     add_master(db, "T2", 500050, False, pn="P-1")               # spare row of plant T2
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
-    assert alloc.equipment("PN:EX-CELL T3") == 40100
-    assert alloc.spare("PN:P-1") == 500050
-    assert alloc.new_numbers == 0
+    add_master(db, "T1", 500060, False, pn="P-2", project="P9")  # same plant, other project
+    alloc = DbAllocator(db, "T1", "P1")
+    assert alloc.equipment("PN:EX-CELL T3") == 40101
+    assert alloc.spare("PN:P-1") == 500061
+    assert alloc.spare("PN:P-2") == 500062
+    assert alloc.new_numbers == 3
 
 
 def test_sap_number_of_another_plant_is_not_reused(db):
     add_master(db, "T2", 80012204, False, pn="SAP-PN")          # Other plant: SAP number in the temp column
     add_master(db, "T1", 80012999, False, pn="SAME-PLANT")      # same plant: reused as before
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    alloc = DbAllocator(db, "T1", "P1")
     assert alloc.spare("PN:SAP-PN") == 500001
     assert alloc.spare("PN:SAME-PLANT") == 80012999
 
 
 def test_equipment_and_spare_numbers_stay_apart(db):
     add_master(db, "T1", 500060, False, pn="BOTH")              # the part is known as a spare only
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    alloc = DbAllocator(db, "T1", "P1")
     assert alloc.equipment("PN:BOTH") == 40001
 
 
-def test_tag_numbers_stay_per_plant(db):
-    t1 = DbAllocator(db, "DUKHAN:T1", ["T1"]).equipment("TAG:34-QD-23")
-    assert DbAllocator(db, "DUKHAN:T1", ["T1"]).equipment("TAG:34-QD-23") == t1
-    assert DbAllocator(db, "OTHER:T2", ["T2"]).equipment("TAG:34-QD-23") != t1
+def test_tag_numbers_stay_per_plant_and_project(db):
+    t1 = DbAllocator(db, "T1", "P1").equipment("TAG:34-QD-23")
+    assert DbAllocator(db, "T1", "P1").equipment("TAG:34-QD-23") == t1
+    assert DbAllocator(db, "T2", "P1").equipment("TAG:34-QD-23") != t1
+    assert DbAllocator(db, "T1", "P2").equipment("TAG:34-QD-23") != t1
 
 
 def test_spare_never_takes_an_equipment_number(db):
-    add_master(db, "T2", 40100, True, pn="JB82")                # the part is known as an equipment only
-    alloc = DbAllocator(db, "DUKHAN:T1", ["T1"])
+    add_master(db, "T1", 40100, True, pn="JB82")                # the part is known as an equipment only
+    alloc = DbAllocator(db, "T1", "P1")
     assert alloc.spare("PN:JB82") == 500001                     # a spare gets a spare number of its own
     assert alloc.equipment("PN:JB82") == 40100                  # the equipment keeps its number
     assert alloc.spare("PN:JB82") == 500001 and alloc.new_numbers == 1   # repeated: reused, not new
@@ -172,7 +189,7 @@ def test_conversion_writes_master_description_to_both_templates(db, sample_bytes
 
     import openpyxl
 
-    from app.models import ExtractedLine
+    from app.models import ExtractedLine, Plant
     from app.services.converter import convert
     from app.services.input_reader import norm_header
 
@@ -180,8 +197,11 @@ def test_conversion_writes_master_description_to_both_templates(db, sample_bytes
                                                           {}).lines if ln.temp_number == 10231307)
     db.execute(insert(master).values(material_temp_number=10231307, maintenance_planning_plant=None,
                                      material_description="MASTER DESCRIPTION", old_material_number_spf_number=spf))
+    plant = Plant(plant_type="DUKHAN", code="T1", name="Test plant")
+    db.add(plant)
     db.commit()
-    job = convert(db, plant_type="DUKHAN", plant=None, content=sample_bytes, filename="in.xlsx", user_name="t")
+    job = convert(db, plant_type="DUKHAN", plant=plant, content=sample_bytes, filename="in.xlsx", user_name="t",
+                  project_number="P1")
 
     def descriptions(ws, first=6):
         col = {norm_header(c.value): c.column for c in ws[1] if c.value}

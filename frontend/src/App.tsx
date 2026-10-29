@@ -11,8 +11,9 @@ import { BoxIcon, ClockIcon, DownloadIcon, GearIcon, initials, LayersIcon, Uploa
 const isExcel = (f: File) => /\.xls[xm]$/i.test(f.name);
 
 /* ------------------------------------------------------------------ plant picker (shared) */
-function PlantFields({ plants, plantId, onChange, disabled }: {
-  plants: Plant[]; plantId: number | ""; onChange: (id: number | "") => void; disabled?: boolean;
+function PlantFields({ plants, plantId, onChange, projectNo, onProjectNoChange, disabled }: {
+  plants: Plant[]; plantId: number | ""; onChange: (id: number | "") => void;
+  projectNo: string; onProjectNoChange: (value: string) => void; disabled?: boolean;
 }) {
   const plant = plants.find((p) => p.id === plantId);
   return (
@@ -59,6 +60,35 @@ function PlantFields({ plants, plantId, onChange, disabled }: {
       placeholder="Shown when a plant is selected"
     />
   </label>
+
+  {/* sits in the grid's next row, under the plant select; letters and digits only */}
+  <label className="field">
+    <span className="label">
+      PROJECT NUMBER
+      <em
+        style={{
+          color: "#ff0000",
+          fontSize: "14px",
+          fontWeight: "bold",
+          fontStyle: "normal",
+          marginLeft: "4px",
+          lineHeight: 1
+        }}
+      >
+        *
+      </em>
+    </span>
+
+    <input
+      value={projectNo}
+      maxLength={25}
+      disabled={disabled}
+      placeholder="Enter the Project Number"
+      onChange={(e) =>
+        onProjectNoChange(e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 25))
+      }
+    />
+  </label>
 </div>
 
   );
@@ -95,6 +125,7 @@ let batchSeq = 0;
 function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; onBusyChange?: (busy: boolean) => void }) {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [plantId, setPlantId] = useState<number | "">("");
+  const [projectNo, setProjectNo] = useState("");
   const [items, setItems] = useState<BatchItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -146,7 +177,7 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
       for (const [n, item] of queue.entries()) {
         update(item.id, { status: "running", error: undefined });
         try {
-          const job = await api.convert({ plantType: plant.plant_type, plantId: plant.id, file: item.file });
+          const job = await api.convert({ plantType: plant.plant_type, plantId: plant.id, projectNo, file: item.file });
           update(item.id, { status: "done", job });
         } catch (e) {
           failedCount += 1;
@@ -165,7 +196,7 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
   const failed = items.filter((i) => i.status === "failed").length;
   const pending = items.length - done;
   const running = items.findIndex((i) => i.status === "running");
-  const canSubmit = !!plant && pending > 0 && !busy;
+  const canSubmit = !!plant && !!projectNo && pending > 0 && !busy;  // numbers are reused per plant + project
 
   return (
     <section className="extract">
@@ -173,7 +204,8 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
       <p className="page-sub">Upload a set of SPIR files (.xlsx / .xlsm). Each file gets its own filled BOM working template.</p>
 
       <div className="extract__body">
-      <PlantFields plants={plants} plantId={plantId} onChange={setPlantId} disabled={busy} />
+      <PlantFields plants={plants} plantId={plantId} onChange={setPlantId}
+                   projectNo={projectNo} onProjectNoChange={setProjectNo} disabled={busy} />
 
       <div
         className={`drop ${dragging ? "drop--over" : ""} ${busy ? "drop--busy" : ""}`}
@@ -266,6 +298,7 @@ function BatchPanel({ onConverted, onBusyChange }: { onConverted: () => void; on
 function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; onBusyChange?: (busy: boolean) => void }) {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [plantId, setPlantId] = useState<number | "">("");
+  const [projectNo, setProjectNo] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -305,7 +338,7 @@ function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; 
     setUploaded(0);
     try {
       const job = await api.convert({
-        plantType: plant.plant_type, plantId: plant.id, file,
+        plantType: plant.plant_type, plantId: plant.id, projectNo, file,
         // the server reports no conversion progress, only the upload is measurable
         onUploadProgress: (f) => setUploaded(f >= 1 ? null : f),
       });
@@ -320,7 +353,7 @@ function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; 
     }
   };
 
-  const canSubmit = !!plant && !!file && !busy;
+  const canSubmit = !!plant && !!projectNo && !!file && !busy;  // numbers are reused per plant + project
 
   return (
     <section className="extract">
@@ -328,7 +361,8 @@ function ConvertPanel({ onConverted, onBusyChange }: { onConverted: () => void; 
       <p className="page-sub">Upload a SPIR (.xlsx / .xlsm). You'll get the filled BOM working template.</p>
 
       <div className="extract__body">
-      <PlantFields plants={plants} plantId={plantId} onChange={setPlantId} />
+      <PlantFields plants={plants} plantId={plantId} onChange={setPlantId}
+                   projectNo={projectNo} onProjectNoChange={setProjectNo} />
 
       <div
         className={`drop ${dragging ? "drop--over" : ""} ${file ? "drop--has" : ""}`}
@@ -396,6 +430,7 @@ function ResultView({ job }: { job: Job }) {
         <Stat label="SPIR number" value={(job.spir_numbers ?? []).join(", ") || "—"} />
         <Stat label="Template" value={job.plant_type === "DUKHAN" ? "Dukhan" : "Other plant"} />
         <Stat label="Planning plant" value={job.plant_code ?? "—"} />
+        <Stat label="Project number" value={job.project_number ?? "—"} />
       </div>
       
     </div>

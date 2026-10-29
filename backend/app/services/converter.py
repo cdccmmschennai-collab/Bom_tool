@@ -15,7 +15,7 @@ from .excel_writer import TemplateError, write_submission, write_workbook
 from .input_reader import InputFileError, read_input
 from .material_master import save_to_master, with_master_descriptions
 from .parts import save_lines
-from .numbering import DbAllocator, numbering_scope, scope_plant_codes
+from .numbering import DbAllocator
 
 log = logging.getLogger(__name__)
 
@@ -40,22 +40,23 @@ def output_filename(plant_type: str, plant_code: str | None, spir_numbers: list[
 
 
 def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes, filename: str,
-            user_name: str | None) -> ConversionJob:
+            user_name: str | None, project_number: str | None = None) -> ConversionJob:
     settings = get_settings()
     plant_type = plant_type.upper()
     plant_code = plant.code if plant else None
 
     job = ConversionJob(
         plant_type=plant_type, plant_id=plant.id if plant else None, plant_code=plant_code,
-        user_name=user_name, status="SUCCESS", input_filename=filename, input_file=content,
+        project_number=project_number, user_name=user_name, status="SUCCESS", input_filename=filename, input_file=content,
     )
     try:
         rows = read_input(content)
         db.add(job)
         db.flush()  # get job.id
 
-        allocator = DbAllocator(db, numbering_scope(plant_type, plant_code),
-                                scope_plant_codes(db, plant_type, plant_code))
+        if not plant_code or not project_number:
+            raise ValueError("A maintenance planning plant and a project number are required.")
+        allocator = DbAllocator(db, plant_code, project_number)  # numbers reused only for this plant + project
         allocator.job_id = job.id
         result = build_bom(rows, plant_type, plant_code, allocator, country_map(db), settings.mfr_part_number_max,
                            cabinet_quantities=settings.cabinet_compare_quantities)
@@ -74,7 +75,7 @@ def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes
         job.spare_count = result.spare_count
         job.line_count = len(result.lines)
         job.warnings = [w.as_dict() for w in result.warnings]
-        added = save_to_master(db, result, plant_code)
+        added = save_to_master(db, result, plant_code, project_number)
         save_lines(db, job.id, result)  # searchable on the Parts Master page
         log.info("Job %s: %s new rows added to the material master", job.id, added)
         db.commit()
@@ -84,7 +85,7 @@ def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes
         log.exception("Conversion failed for %s", filename)
         failed = ConversionJob(
             plant_type=plant_type, plant_id=plant.id if plant else None, plant_code=plant_code,
-            user_name=user_name, status="FAILED", error=str(exc)[:2000],
+            project_number=project_number, user_name=user_name, status="FAILED", error=str(exc)[:2000],
             input_filename=filename, input_file=content,
         )
         saved = ""

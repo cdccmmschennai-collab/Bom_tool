@@ -16,11 +16,6 @@ class Settings(BaseSettings):
     equipment_start: int = 40001
     spare_start: int = 500001
 
-    # "plant_type" -> one running sequence for DUKHAN and one for OTHER plants
-    # "plant"      -> one running sequence per selected planning plant code
-    #                 (falls back to the plant type when no planning plant is chosen)
-    numbering_scope: str = "plant"
-
     # True (default) -> cabinets with the same spares in other quantities get their own SUBMT;
     # False -> old rule of 2026-10-23: same spares = same SUBMT whatever the quantities (CABINET_COMPARE_QUANTITIES)
     cabinet_compare_quantities: bool = True
