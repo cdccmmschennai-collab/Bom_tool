@@ -44,6 +44,7 @@ MATERIAL IS AN EQUIPMENT INDICATOR: for equipment- "YES", spare- "NO"
 BOM HEADER  NUMBER : put equipment header number for that equipment and spare
 
 QUANTITY : in input file merge both column "EQPT QTY, QUANTITY IDENTICAL PARTS FITTED" in one column
+    UPDATE 2026-10-29: within one equipment (tag), spares with the same SAP NUMBER and the same MANUFACTURER PART NUMBER (case / extra spaces ignored) are one line - their quantities are added up (warning REPEATED_SPARE; a quantity that is not a number is not added - warning QUANTITY_NOT_ADDED). Same SAP NUMBER with another MANUFACTURER PART NUMBER = its own line on every sheet. Tags sharing a BOM HEADER NUMBER keep the first tag's total (other totals - warning QUANTITY_DIFFERS); the SUBMT numbering is not changed by this.
 
 POSITION NUMBER: Refer input file "POSITION NUMBER" Column 
 

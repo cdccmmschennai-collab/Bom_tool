@@ -19,7 +19,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .bom_builder import DUKHAN, BomLine, BomResult
+from .bom_builder import DUKHAN, BomLine, BomResult, add_quantities, spare_identity
 from .input_reader import norm_header
 
 BOM_SHEET = "BOM WORKING TEMPLATE"
@@ -112,21 +112,28 @@ def unique_lines(lines: list[BomLine]) -> list[BomLine]:
     """Lines of the working template, each unique record once. The sheet has no tag column, so tags that
     share an equipment temp number are one BOM: its block (B line of the first such tag + its spares) is
     listed once, and a spare a later tag adds that is not listed yet goes under that block.
-    Each spare (temp number) is listed once per BOM header - its first line, so the first tag's quantity
-    and position. SERIAL NUMBER is renumbered 1..n; the lines themselves are not changed."""
+    Each spare (temp number + manufacturer part number, see spare_identity) is listed once per BOM header - its
+    first line, so the first tag's position. Repeats under that same tag add their quantity to it; a later tag of
+    the header does not (the first tag's quantity is kept). The same SAP / temp number with another part number is
+    its own line. SERIAL NUMBER is renumbered 1..n; the input lines themselves are not changed."""
     blocks: dict[object, list[BomLine]] = {}
-    seen: set[tuple] = set()  # (BOM header, spare temp number) already listed
+    seen: dict[tuple, tuple[int, int]] = {}  # (BOM header, spare identity) -> (tag it was listed from, index in block)
     block: object = None
+    source = 0  # each equipment line is one tag; quantities are added only within it
     for line in lines:
-        key = (line.bom_header_number, line.temp_number)
+        key = (line.bom_header_number, *spare_identity(line))
         if line.category == "B" or not blocks:
+            source += 1
             block = line.temp_number
             if block not in blocks:
                 blocks[block] = [line]
             continue
         if key not in seen:
-            seen.add(key)
+            seen[key] = (source, len(blocks[block]))
             blocks[block].append(line)
+        elif seen[key][0] == source:
+            i = seen[key][1]
+            blocks[block][i] = replace(blocks[block][i], quantity=add_quantities(blocks[block][i].quantity, line.quantity))
     return [replace(line, serial=i) for i, line in enumerate((ln for b in blocks.values() for ln in b), start=1)]
 
 
@@ -263,6 +270,8 @@ def _write_verification(wb: openpyxl.Workbook, bom: Worksheet, all_lines: list[B
     repeats (other tags / positions, dropped by unique_lines), marked with their tag and input row.
     Nothing flagged -> the sheet is not created."""
     def key(line: BomLine) -> tuple:
+        if line.category == "L":  # same SAP / temp number with another part number is its own line
+            return line.category, line.bom_header_number, *spare_identity(line)
         return line.category, line.bom_header_number, line.temp_number
 
     def has_tag(line: BomLine) -> bool:

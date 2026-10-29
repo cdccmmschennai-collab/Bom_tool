@@ -519,6 +519,91 @@ def test_identical_spare_under_two_versions_of_an_equipment_is_listed_once():
         (1, "B", 40001, 131), (2, "L", 500001, 1)]
 
 
+def _sap_rows(spares, tag="P-101", eq_pn="PUMP-1", first=1):
+    """Equipment row + spare rows (sap, part number, qty) under one tag, input rows numbered from `first`."""
+    from app.services.input_reader import InputRow
+
+    rows = [InputRow(first, {"TAG NO": tag, "EQPT QTY": "1", "MANUFACTURER PART NUMBER": eq_pn,
+                             "DESCRIPTION OF PARTS": "PUMP"})]
+    for i, (sap, pn, qty) in enumerate(spares, start=1):
+        rows.append(InputRow(first + i, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty, "SAP NUMBER": sap,
+                                         "MANUFACTURER PART NUMBER": pn, "DESCRIPTION OF PARTS": f"PART {pn}"}))
+    return rows
+
+
+def test_same_sap_and_part_number_under_one_tag_adds_the_quantities():
+    from app.services.excel_writer import unique_lines
+
+    rows = _sap_rows([("10636722", "SEAL-A", "2"), ("10636723", "BRG-1", "1"),
+                      ("10636722", " seal-a ", "3"), ("10636722", "SEAL-A", "0.5")])  # case / spaces do not count
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert len(res.lines) == 5                                                       # every input line kept
+    assert [w.lines for w in res.warnings if w.code == "REPEATED_SPARE"] == [[4, 5]]
+    assert not [w for w in res.warnings if w.code in ("QUANTITY_DIFFERS", "QUANTITY_NOT_ADDED")]
+    assert [(ln.serial, ln.temp_number, ln.mfr_part_number, ln.quantity) for ln in unique_lines(res.lines)] == [
+        (1, 40001, "PUMP-1", 1), (2, 10636722, "SEAL-A", 5.5), (3, 10636723, "BRG-1", 1)]
+
+
+def test_same_sap_other_part_numbers_are_separate_lines_on_every_sheet():
+    from app.services.excel_writer import write_submission
+
+    rows = _sap_rows([("10636722", "SEAL-A", "2"), ("10636722", "SEAL-B", "4"), ("10636722", "SEAL-A", "1")])
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [w.lines for w in res.warnings if w.code == "REPEATED_SPARE"] == [[4]]  # SEAL-B is not a repeat
+
+    s = get_settings()
+    bom = openpyxl.load_workbook(io.BytesIO(write_workbook(res, DUKHAN, s.template_dukhan)))["BOM WORKING TEMPLATE"]
+    hdr = {str(c.value).strip(): c.column for c in bom[1] if c.value}
+    got = [(bom.cell(r, hdr["MATERIAL TEMP NUMBER"]).value, bom.cell(r, hdr["MANUFACTURERS PART NUMBER"]).value,
+            bom.cell(r, hdr["QUANTITY"]).value) for r in range(6, 10)]
+    assert got == [(40001, "PUMP-1", 1), (10636722, "SEAL-A", 3), (10636722, "SEAL-B", 4), (None, None, None)]
+
+    sub = openpyxl.load_workbook(io.BytesIO(write_submission(res, s.submission_dukhan)))
+    count = lambda name: sum(1 for row in sub[name].iter_rows(min_row=6) if any(c.value is not None for c in row))  # noqa: E731
+    assert (count("BOM HEADER"), count("BOM PARTS"), count("MATERIAL MASTER")) == (1, 2, 3)
+
+
+def test_same_sap_and_part_number_is_not_added_across_tags_of_one_header():
+    from app.services.excel_writer import unique_lines
+
+    rows = (_sap_rows([("10636722", "SEAL-A", "2"), ("10636722", "SEAL-A", "1")], tag="P-101") +
+            _sap_rows([("10636722", "SEAL-A", "3")], tag="P-102", first=10))       # same pump, same total
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [t.submt for t in res.tags] == [40001, 40001]
+    assert not [w for w in res.warnings if w.code == "QUANTITY_DIFFERS"]
+    # one BOM: the first tag's total, not 2 + 1 + 3
+    assert [(ln.category, ln.temp_number, ln.quantity) for ln in unique_lines(res.lines)] == [
+        ("B", 40001, 1), ("L", 10636722, 3)]
+
+    rows = (_sap_rows([("10636722", "SEAL-A", "2"), ("10636722", "SEAL-A", "1")], tag="P-101") +
+            _sap_rows([("10636722", "SEAL-A", "2")], tag="P-102", first=10))       # same pump, other total
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[11]]
+    assert [ln.quantity for ln in unique_lines(res.lines)] == [1, 3]
+
+
+def test_text_quantity_of_a_repeated_spare_is_not_added():
+    from app.services.excel_writer import unique_lines
+
+    rows = _sap_rows([("10636722", "SEAL-A", "2"), ("10636722", "SEAL-A", "AS REQUIRED"), ("10636722", "SEAL-A", None)])
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_NOT_ADDED"] == [[3]]
+    assert [ln.quantity for ln in unique_lines(res.lines)] == [1, 2]
+
+
+def test_verification_reason_stays_with_its_own_part_number_under_one_sap():
+    from app.services.excel_writer import find_verification_sheet
+
+    rows = _sap_rows([("10636722", "SEAL-A", "2"), ("10636722", "PUMP-1", "1")])  # 2nd = the equipment's part number
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    wb = openpyxl.load_workbook(io.BytesIO(write_workbook(res, DUKHAN, get_settings().template_dukhan)))
+    ws = find_verification_sheet(wb)
+    hdr = {str(c.value).strip(): c.column for c in ws[1] if c.value}
+    flagged = [(ws.cell(r, hdr["SERIAL NUMBER"]).value, ws.cell(r, hdr["MANUFACTURERS PART NUMBER"]).value)
+               for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value is not None]
+    assert flagged == [(3, "PUMP-1")]
+
+
 def test_cabinet_is_grouped_by_its_spares_not_their_quantities():
     from app.services.excel_writer import unique_lines
     from app.services.input_reader import InputRow
@@ -543,7 +628,8 @@ def test_cabinet_is_grouped_by_its_spares_not_their_quantities():
                                                    ("LP-4", 40002), ("LP-5", 40002), ("LP-6", 40003),
                                                    ("LP-7", 40004)]
     assert [w.lines for w in res.warnings if w.code == "REPEATED_SPARE"] == [[10, 11]]
-    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[15]]  # same set, other quantity
+    # LP-3's repeats add up to 4 (LP-1 has 2) and LP-5 has 5 - the templates keep LP-1's quantities
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[8, 9, 10, 11, 15]]
     out = unique_lines(res.lines)
     # each spare once per header, with the first tag's quantity
     assert [(ln.category, ln.temp_number, ln.bom_header_number, ln.quantity) for ln in out] == [
@@ -613,7 +699,7 @@ def test_cabinet_quantities_split_the_submt_when_enabled():
     rows = [eq(1, "LP-1", "8"), sp(2, "LP-1", "10636722", "0010"), sp(3, "LP-1", "10636723", "0020"),
             eq(4, "LP-2", "2"), sp(5, "LP-2", "10636722", "0030"), sp(6, "LP-2", "10636723", "0040"),  # same spares
             eq(7, "LP-3"), sp(8, "LP-3", "10636722", "0010"), sp(9, "LP-3", "10636723", "0020"),
-            sp(10, "LP-3", "10636722", "0090", qty="7"), sp(11, "LP-3", "10636723", "0100"),  # repeat: first qty
+            sp(10, "LP-3", "10636722", "0090", qty="7"), sp(11, "LP-3", "10636723", "0100"),  # repeats, added up
             eq(12, "LP-4"), sp(13, "LP-4", "10636722", "0010"),                      # other spare set
             eq(14, "LP-5"), sp(15, "LP-5", "10636722", "0010", qty="5"),             # same set, other quantity
             eq(16, "LP-6"), sp(17, "LP-6", "10636722", "0010", qty="2.0"),           # same quantity, other spelling
@@ -623,8 +709,9 @@ def test_cabinet_quantities_split_the_submt_when_enabled():
     assert [(t.tag, t.submt) for t in res.tags] == [("LP-1", 40001), ("LP-2", 40001), ("LP-3", 40001),
                                                    ("LP-4", 40002), ("LP-5", 40003), ("LP-6", 40002),
                                                    ("LP-7", 40004), ("LP-8", 40005), ("LP-9", 40006)]
-    # only the repeat inside LP-3 (row 10) still differs; LP-5's other quantity is now its own header
-    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[10]]
+    # only LP-3 still differs (its repeats add up to 9 and 4; the SUBMT compares the first quantities);
+    # LP-5's other quantity is now its own header
+    assert [w.lines for w in res.warnings if w.code == "QUANTITY_DIFFERS"] == [[8, 9, 10, 11]]
     out = unique_lines(res.lines)
     # each configuration is its own BOM with its own quantities
     assert [(ln.category, ln.temp_number, ln.bom_header_number, ln.quantity) for ln in out] == [

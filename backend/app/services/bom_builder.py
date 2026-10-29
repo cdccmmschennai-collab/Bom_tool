@@ -227,6 +227,31 @@ def normalize_part_number(value: str) -> str:
     return " ".join(value.split()).upper()
 
 
+def _part_identity(temp: int | str, part_number: str | None) -> tuple:
+    """(temp number, normalised full part number or None): one spare line of a BOM header."""
+    pn = normalize_part_number(part_number) if part_number else ""
+    return temp, pn or None
+
+
+def spare_identity(line: BomLine) -> tuple:
+    """What makes a spare one line under its BOM header: the temp number (= the SAP NUMBER when there is one) and
+    the full manufacturer part number. Same SAP + same part number = one line (quantities added under one tag);
+    same SAP + another part number = its own line."""
+    return _part_identity(line.temp_number, line.add_information or line.mfr_part_number)
+
+
+def add_quantities(a: int | float | str | None, b: int | float | str | None) -> int | float | str | None:
+    """a + b for numbers (blank counts as nothing); a text quantity cannot be added - `a` is kept."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if isinstance(a, str) or isinstance(b, str):
+        return a
+    total = a + b
+    return int(total) if float(total).is_integer() else round(total, 2)
+
+
 def _description(row: InputRow) -> str:
     return (row.get("NEW DESCRIPTION OF PARTS") or row.get("DESCRIPTION OF PARTS") or "").upper()
 
@@ -548,7 +573,8 @@ def build_bom(
 
         # --- spare lines
         listed = header_spares.setdefault(eq_temp, {})
-        in_tag: set[int | str] = set()
+        in_tag: dict[tuple, int | float | str | None] = {}  # spare identity -> its quantities added up under this tag
+        rows_of: dict[tuple, list[int]] = {}  # spare identity -> its input rows under this tag
         for s in block.spares:
             serial = len(lines) + 1
             sap = s.get("SAP NUMBER")
@@ -577,17 +603,21 @@ def build_bom(
             qty = to_number(s.get("QUANTITY IDENTICAL PARTS FITTED"))
             if qty is None:
                 add_warning("NO_QUANTITY", "Spare lines without QUANTITY IDENTICAL PARTS FITTED.", serial)
-            # the templates list each spare once per BOM header, with the quantity of its first line
-            if temp in in_tag:
+            # the templates list each spare (SAP / temp number + part number) once per BOM header: repeats under
+            # one tag are added up, another tag of the same header keeps the first tag's total
+            ident = _part_identity(temp, s.get("MANUFACTURER PART NUMBER"))
+            if ident in in_tag:
                 add_warning("REPEATED_SPARE",
-                            "Spare(s) repeated under the same tag (other position) - listed once in the templates "
-                            "(see input Excel row numbers).", s.excel_row)
-            in_tag.add(temp)
-            first_qty = listed.setdefault(temp, qty)
-            if first_qty != qty:
-                add_warning("QUANTITY_DIFFERS",
-                            "Spare(s) with another quantity than under the first tag of the same BOM header - "
-                            "the templates keep the first quantity (see input Excel row numbers).", s.excel_row)
+                            "Spare(s) repeated under the same tag (same SAP / part number) - quantities added into "
+                            "one line in the templates (see input Excel row numbers).", s.excel_row)
+                if isinstance(qty, str) or isinstance(in_tag[ident], str):
+                    add_warning("QUANTITY_NOT_ADDED",
+                                "Repeated spare(s) with a quantity that is not a number - not added, the templates "
+                                "keep the first quantity (see input Excel row numbers).", s.excel_row)
+                in_tag[ident] = add_quantities(in_tag[ident], qty)
+            else:
+                in_tag[ident] = qty
+            rows_of.setdefault(ident, []).append(s.excel_row)
 
             s_spir, _ = split_spir(s.get("SPIR NO"))
             if s_spir and s_spir not in spir_numbers:
@@ -614,6 +644,13 @@ def build_bom(
                 input_row=s.excel_row, mfr_name_full=mname_full, spir_number_full=s.get("SPIR NO"),
                 review=_part_number_review(s, block, equipment_pns),
             ))
+
+        differs = [r for ident, total in in_tag.items() if listed.setdefault(ident, total) != total
+                   for r in rows_of[ident]]
+        for r in sorted(differs):
+            add_warning("QUANTITY_DIFFERS",
+                        "Spare(s) with another quantity (added up under the tag) than under the first tag of the same "
+                        "BOM header - the templates keep the first tag's quantity (see input Excel row numbers).", r)
 
     for line in lines:
         if line.review:
