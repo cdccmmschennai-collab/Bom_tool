@@ -9,6 +9,8 @@ SAP MATERIAL NUMBER : REFER INPUT FILE "SAP NUMBER" COLUMN
 
 MATERIAL TEMP NUMBER: if the "SAP NUMBER" Available put that value in this column, otherwise For equipment start with 40000 (5digit number), spare start with 500000 (6 digit number) Spares: same MANUFACTURER PART NUMBER = same number in every plant. Equipment: SUBMT rules of Logic_-_SPIR_TAG_vs_SUBMT.txt (manual valve by MESC number, cabinet by make + model + set of spares (quantities not compared), other equipment by make + model, else part number, else TAG NO). Equipment and spares never share a number.
 
+SPARES WITH THE SAME PART NUMBER: compare the description (NEW DESCRIPTION OF PARTS, else DESCRIPTION OF PARTS; case, dash kind and spaces ignored). Same MANUFACTURER PART NUMBER + same description = duplicate, existing logic (one MATERIAL TEMP NUMBER, one line per BOM header, quantities added under one tag). Same MANUFACTURER PART NUMBER + different description anywhere in the file = not a duplicate: every description gets its own MATERIAL TEMP NUMBER (part number + description; a SAP NUMBER is still used as it is) and its own BOM line, and every spare of that part number is listed on the VERIFICATION sheet ("also used with another description"). A blank description does not count as another description. A part number with only one description in the file is numbered by part number, as before.
+
 MATERIAL TYPEVCATEGORY: For Equipment-B, Spare-L; a Spare whose "SAP NUMBER" starts with 3 or 8 - N (also when the row has no SAP NUMBER but its MATERIAL TEMP NUMBER is a SAP number reused from the material master). Same value in the Working and Submission templates.
 
 EXTERNAL NUMBER ASSIGNED FOR ASSEMBLY: Leave it empty

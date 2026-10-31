@@ -38,6 +38,16 @@ PART_NUMBER_LABEL_RE = re.compile(r"(?<![A-Z0-9])(?:P/N|PN|PART NUMBER|PART NO)(
 MODEL_LOCATION_SUFFIX_RE = re.compile(r"^(.*[A-Z])\s*[-–]\s*[A-Z]{4,}$")
 
 
+def description_key(text: str | None) -> str:
+    """Description for comparing: case, dash kind (- – —) and spaces do not count:
+    'Supply grille ... damper – 600 x 400 mm' -> 'SUPPLY GRILLE ... DAMPER-600X400MM'."""
+    text = re.sub(r"[–—]", "-", (text or "").upper())
+    text = " ".join(text.split())
+    text = re.sub(r"\s*-\s*", "-", text)
+    text = re.sub(r"(\d)\s*X\s*(\d)", r"\1X\2", text)
+    return re.sub(r"(\d)\s+MM\b", r"\1MM", text)
+
+
 class NumberAllocator(Protocol):
     """Hands out Material Temp Numbers. The same key always returns the same number."""
 
@@ -149,6 +159,7 @@ class BomLine:
     mfr_name_full: str | None = None    # full manufacturer name when it was shortened to fit
     spir_number_full: str | None = None  # SPIR NO as in the input, revision kept - working and submission templates
     review: list[str] = field(default_factory=list)  # why the line needs a manual check (VERIFICATION sheet)
+    description_variant: str | None = None  # part number used with several descriptions: the one of this spare
 
     @property
     def type_category(self) -> str:
@@ -227,17 +238,33 @@ def normalize_part_number(value: str) -> str:
     return " ".join(value.split()).upper()
 
 
-def _part_identity(temp: int | str, part_number: str | None) -> tuple:
-    """(temp number, normalised full part number or None): one spare line of a BOM header."""
+def _part_identity(temp: int | str, part_number: str | None, variant: str | None = None) -> tuple:
+    """(temp number, normalised full part number or None[, description variant]): one spare line of a BOM header."""
     pn = normalize_part_number(part_number) if part_number else ""
-    return temp, pn or None
+    return (temp, pn or None, variant) if variant else (temp, pn or None)
 
 
 def spare_identity(line: BomLine) -> tuple:
     """What makes a spare one line under its BOM header: the temp number (= the SAP NUMBER when there is one) and
     the full manufacturer part number. Same SAP + same part number = one line (quantities added under one tag);
-    same SAP + another part number = its own line."""
-    return _part_identity(line.temp_number, line.add_information or line.mfr_part_number)
+    same SAP + another part number = its own line. When the part number is used in the file with several
+    descriptions, the description too (same part number + another description = its own line)."""
+    return _part_identity(line.temp_number, line.add_information or line.mfr_part_number, line.description_variant)
+
+
+def _spare_description(row: InputRow) -> str:
+    """Description of a spare as written to the templates (NEW DESCRIPTION OF PARTS, else DESCRIPTION OF PARTS)."""
+    return row.get("NEW DESCRIPTION OF PARTS") or row.get("DESCRIPTION OF PARTS") or ""
+
+
+def description_variant(row: InputRow, part_descs: dict[str, dict[str, str]] | None) -> str | None:
+    """Normalised description of a spare whose part number is used in the file with more than one description
+    (see _part_descriptions), else None: the part number alone tells the spare, as before."""
+    pn = row.get("MANUFACTURER PART NUMBER")
+    desc = description_key(_spare_description(row))
+    if not part_descs or not pn or not pn.strip() or not desc:
+        return None
+    return desc if len(part_descs.get(normalize_part_number(pn), {})) > 1 else None
 
 
 def add_quantities(a: int | float | str | None, b: int | float | str | None) -> int | float | str | None:
@@ -371,6 +398,34 @@ def _part_number_review(spare: InputRow, block: _Block, equipment_pns: dict[str,
             f"(tag {own_tag}) has {own_pn or 'no part number'} - check which is right."]
 
 
+def _part_descriptions(blocks: list[_Block]) -> dict[str, dict[str, str]]:
+    """Normalised part number -> {normalised description: description as written} of the spares with a part number
+    and a description, input order (case, dash kind and spaces of the description do not count, see
+    description_key). A blank description is not counted as another description."""
+    out: dict[str, dict[str, str]] = {}
+    for block in blocks:
+        for s in block.spares:
+            pn, desc = s.get("MANUFACTURER PART NUMBER"), _spare_description(s)
+            if pn and pn.strip() and description_key(desc):
+                out.setdefault(normalize_part_number(pn), {}).setdefault(description_key(desc), desc)
+    return out
+
+
+def _description_review(spare: InputRow, part_descs: dict[str, dict[str, str]]) -> list[str]:
+    """VERIFICATION reason for a spare whose part number is used in the file with another description (such
+    spares are kept as separate lines). Same part number + same description only -> no reason."""
+    pn = spare.get("MANUFACTURER PART NUMBER")
+    if not pn or not pn.strip():
+        return []
+    descs = part_descs.get(normalize_part_number(pn), {})
+    if len(descs) < 2:
+        return []
+    own = description_key(_spare_description(spare))
+    others = "; ".join(d for k, d in descs.items() if k != own)
+    return [f"Part number {pn} is also used with another description ({others}) - kept as a separate line, "
+            "check the descriptions."]
+
+
 def _installed_with_quantities(spare_rows: list[InputRow]) -> list[tuple[str, str | None]]:
     """(spare key, quantity) per installed spare, sorted. A spare repeated under the tag keeps its first quantity,
     as in the templates; the quantity is normalised ("2" = "2.0"), blank stays None."""
@@ -417,9 +472,14 @@ def _equipment_key(row: InputRow, tag_key: str, has_header: bool, spare_rows: li
                                                else f"TAG:{tag_key}")
 
 
-def _spare_key(row: InputRow) -> str:
-    """One manufacturer part number = one temp number; SAP / SPF / description only when there is no part number."""
+def _spare_key(row: InputRow, part_descs: dict[str, dict[str, str]] | None = None) -> str:
+    """One manufacturer part number = one temp number; SAP / SPF / description only when there is no part number.
+    A part number used in the file with several descriptions (part_descs given): one temp number per part number +
+    description (PNDESC:<pn>|<desc>). Without part_descs (cabinet signatures) always by part number, as before."""
     pn = row.get("MANUFACTURER PART NUMBER")
+    variant = description_variant(row, part_descs)
+    if variant:
+        return f"PNDESC:{normalize_part_number(pn)}|{variant}"
     if pn and pn.strip():
         return f"PN:{normalize_part_number(pn)}"
     sap = row.get("SAP NUMBER")
@@ -488,6 +548,7 @@ def build_bom(
     spir_numbers: list[str] = []
     header_spares: dict[int | str, dict] = {}  # BOM header -> spare temp -> quantity of its first line
     equipment_pns = _equipment_part_numbers(blocks)  # for the VERIFICATION sheet only
+    part_descs = _part_descriptions(blocks)  # part number with several descriptions -> one spare per description
 
     def country(row: InputRow, serial: int) -> tuple[str | None, str | None]:
         name = row.get("VENDOR COUNTRY")
@@ -581,7 +642,7 @@ def build_bom(
             if sap:  # a SAP NUMBER is the MATERIAL TEMP NUMBER in every plant (Dukhan and others)
                 temp: int | str = to_int_if_digits(sap)  # type: ignore[assignment]
             else:
-                temp = allocator.spare(_spare_key(s))
+                temp = allocator.spare(_spare_key(s, part_descs))
                 if plant_type == OTHER:
                     add_warning("NO_SAP_NUMBER", "Spares without SAP NUMBER were given a new 5xxxxx temp number.", serial)
 
@@ -605,7 +666,8 @@ def build_bom(
                 add_warning("NO_QUANTITY", "Spare lines without QUANTITY IDENTICAL PARTS FITTED.", serial)
             # the templates list each spare (SAP / temp number + part number) once per BOM header: repeats under
             # one tag are added up, another tag of the same header keeps the first tag's total
-            ident = _part_identity(temp, s.get("MANUFACTURER PART NUMBER"))
+            variant = description_variant(s, part_descs)
+            ident = _part_identity(temp, s.get("MANUFACTURER PART NUMBER"), variant)
             if ident in in_tag:
                 add_warning("REPEATED_SPARE",
                             "Spare(s) repeated under the same tag (same SAP / part number) - quantities added into "
@@ -642,7 +704,8 @@ def build_bom(
                 add_information=add_info, min_qty=min_q, max_qty=max_q, country_name=cname,
                 currency=code_part(s.get("CURRENCY")),
                 input_row=s.excel_row, mfr_name_full=mname_full, spir_number_full=s.get("SPIR NO"),
-                review=_part_number_review(s, block, equipment_pns),
+                review=_part_number_review(s, block, equipment_pns) + _description_review(s, part_descs),
+                description_variant=variant,
             ))
 
         differs = [r for ident, total in in_tag.items() if listed.setdefault(ident, total) != total

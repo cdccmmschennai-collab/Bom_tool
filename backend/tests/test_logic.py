@@ -604,6 +604,97 @@ def test_verification_reason_stays_with_its_own_part_number_under_one_sap():
     assert flagged == [(3, "PUMP-1")]
 
 
+GRILLE_SUPPLY = "SUPPLY GRILLE IN ALUMINIUM WITH DOUBLE BLADES WITH ADJUSTABLE DAMPER – 600X400MM"
+GRILLE_RETURN = "RETURN GRILLE IN ALUMINIUM WITH DOUBLE BLADES WITH ADJUSTABLE DAMPER – 400X300MM"
+
+
+def _desc_rows(spares, tag="AHU-1"):
+    """Equipment row + spare rows (sap, part number, description, qty) under one tag."""
+    from app.services.input_reader import InputRow
+
+    rows = [InputRow(1, {"TAG NO": tag, "EQPT QTY": "1", "MANUFACTURER PART NUMBER": "AHU-PN",
+                         "DESCRIPTION OF PARTS": "AIR HANDLING UNIT"})]
+    for i, (sap, pn, desc, qty) in enumerate(spares, start=2):
+        rows.append(InputRow(i, {"TAG NO": tag, "QUANTITY IDENTICAL PARTS FITTED": qty, "SAP NUMBER": sap,
+                                 "MANUFACTURER PART NUMBER": pn, "DESCRIPTION OF PARTS": desc}))
+    return rows
+
+
+def _verification_rows(res, plant_type=OTHER):
+    from app.services.excel_writer import find_verification_sheet
+
+    s = get_settings()
+    wb = openpyxl.load_workbook(io.BytesIO(write_workbook(
+        res, plant_type, s.template_dukhan if plant_type == DUKHAN else s.template_other)))
+    ws = find_verification_sheet(wb)
+    if ws is None:
+        return []
+    hdr = {str(c.value).strip(): c.column for c in ws[1] if c.value}
+    return [(ws.cell(r, hdr["SERIAL NUMBER"]).value, ws.cell(r, hdr["MATERIAL DESCRIPTION"]).value,
+             ws.cell(r, hdr["CHECK REASON"]).value, ws.cell(r, hdr["SERIAL NUMBER"]).hyperlink.location)
+            for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value is not None]
+
+
+def test_grilles_with_one_part_number_and_other_descriptions_are_separate_lines():
+    from app.services.excel_writer import unique_lines
+
+    rows = _desc_rows([(None, "GR-1", GRILLE_SUPPLY, "2"), (None, "GR-1", GRILLE_RETURN, "3")])
+    res = build_bom(rows, OTHER, "T1", InMemoryAllocator(), {})
+    assert not [w for w in res.warnings if w.code == "REPEATED_SPARE"]
+    got = [(ln.temp_number, ln.mfr_part_number, ln.description, ln.quantity) for ln in unique_lines(res.lines)]
+    assert got == [(40001, "AHU-PN", "AIR HANDLING UNIT", 1), (500001, "GR-1", GRILLE_SUPPLY, 2),
+                   (500002, "GR-1", GRILLE_RETURN, 3)]
+    flagged = _verification_rows(res)
+    assert [(serial, desc) for serial, desc, _, _ in flagged] == [(2, GRILLE_SUPPLY), (3, GRILLE_RETURN)]
+    assert f"also used with another description ({GRILLE_RETURN})" in flagged[0][2]
+    assert f"also used with another description ({GRILLE_SUPPLY})" in flagged[1][2]
+    assert flagged[1][3].endswith("!A8")                    # serial 3 = row 8 of the BOM sheet
+    assert [w.lines for w in res.warnings if w.code == "VERIFY"] == [[2, 3]]
+
+
+def test_same_grille_part_number_and_description_is_still_one_line():
+    from app.services.excel_writer import unique_lines
+
+    rows = _desc_rows([(None, "GR-1", GRILLE_SUPPLY, "2"),
+                       (None, "gr-1", "Supply grille in aluminium with double blades with adjustable damper - "
+                                      "600 x 400 mm", "3")])  # case, dash and spaces do not count
+    res = build_bom(rows, OTHER, "T1", InMemoryAllocator(), {})
+    assert [w.lines for w in res.warnings if w.code == "REPEATED_SPARE"] == [[3]]
+    assert [(ln.temp_number, ln.quantity) for ln in unique_lines(res.lines)] == [(40001, 1), (500001, 5)]
+    assert _verification_rows(res) == []
+
+
+def test_any_spare_with_one_part_number_and_other_descriptions_is_separate_lines():
+    from app.services.excel_writer import unique_lines
+
+    rows = (_desc_rows([(None, "FLT-1", "FILTER BAG", "2"), (None, "FLT-2", "O-RING", "1")]) +
+            _desc_rows([(None, "FLT-1", "FILTER CARTRIDGE", "3"), (None, "FLT-2", "o-ring", "4")], tag="AHU-2"))
+    res = build_bom(rows, OTHER, "T1", InMemoryAllocator(), {})
+    assert [(ln.temp_number, ln.description, ln.quantity) for ln in unique_lines(res.lines)] == [
+        (40001, "AIR HANDLING UNIT", 1), (500001, "FILTER BAG", 2), (500002, "O-RING", 1),
+        (500003, "FILTER CARTRIDGE", 3)]   # O-RING under AHU-2: same part number + description = the same spare
+    assert [ln.description for ln in res.lines if ln.review] == ["FILTER BAG", "FILTER CARTRIDGE"]
+
+
+def test_blank_description_is_not_another_description():
+    from app.services.excel_writer import unique_lines
+
+    rows = _desc_rows([(None, "FLT-1", "FILTER BAG", "2"), (None, "FLT-1", None, "3")])
+    res = build_bom(rows, OTHER, "T1", InMemoryAllocator(), {})
+    assert [(ln.temp_number, ln.quantity) for ln in unique_lines(res.lines)] == [(40001, 1), (500001, 5)]  # as before
+    assert not [ln for ln in res.lines if ln.review]
+
+
+def test_grilles_with_one_sap_and_part_number_and_other_descriptions_are_separate_lines():
+    from app.services.excel_writer import unique_lines
+
+    rows = _desc_rows([("10636722", "GR-1", GRILLE_SUPPLY, "2"), ("10636722", "GR-1", GRILLE_RETURN, "3")])
+    res = build_bom(rows, DUKHAN, "DK01", InMemoryAllocator(), {})
+    assert [(ln.temp_number, ln.description) for ln in unique_lines(res.lines)][1:] == [
+        (10636722, GRILLE_SUPPLY), (10636722, GRILLE_RETURN)]
+    assert [serial for serial, *_ in _verification_rows(res, DUKHAN)] == [2, 3]
+
+
 def test_cabinet_is_grouped_by_its_spares_not_their_quantities():
     from app.services.excel_writer import unique_lines
     from app.services.input_reader import InputRow
@@ -957,6 +1048,7 @@ def test_verification_sheet_lists_only_flagged_lines(plant_type):
         assert f"(tag {tag}, input row {row})" in reason and "check which is right" in reason
     assert ws.cell(2, hdr["SERIAL NUMBER"]).hyperlink.location.endswith("!A7")  # row of serial 2 on the BOM sheet
     assert ws.freeze_panes == "A2"
+    assert all(c.alignment.wrap_text for row in ws.iter_rows(min_row=1, max_row=3) for c in row)  # every cell wraps
 
     # combined: the second file's serials (and links) follow the first file's BOM rows
     vs = openpyxl.load_workbook(io.BytesIO(combine([content, content], WORKING)))["VERIFICATION"]

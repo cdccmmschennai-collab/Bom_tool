@@ -89,6 +89,19 @@ def test_spare_reuses_master_number_by_part_number(db):
     assert again.spare("PN:NEW-PART") == 500021
     assert again.spare("PN:OTHER-PART") == 500022
 
+
+def test_grille_reuses_master_number_by_part_number_and_description(db):
+    supply = "SUPPLY GRILLE IN ALUMINIUM WITH DOUBLE BLADES WITH ADJUSTABLE DAMPER-600X400MM"
+    ret = "RETURN GRILLE IN ALUMINIUM WITH DOUBLE BLADES WITH ADJUSTABLE DAMPER-600X500MM"
+    db.execute(insert(master).values(material_temp_number=500030, maintenance_planning_plant="T1", project_number="P1",
+                                     material_is_equipment_indicator=False, manufacturers_part_number="GR-1",
+                                     material_description="Supply grille in aluminium with double blades with "
+                                                          "adjustable damper – 600 x 400 mm"))
+    alloc = DbAllocator(db, "T1", "P1")
+    assert alloc.spare(f"PNDESC:GR-1|{supply}") == 500030      # same part number + description (case, dash ignored)
+    assert alloc.spare(f"PNDESC:GR-1|{ret}") == 500031         # same part number, other description -> new
+    assert alloc.new_numbers == 1
+
 def test_numbers_are_reused_only_for_the_same_plant_and_project(db):
     keys = [("equipment", "PN:JB82"), ("equipment", "MESC:7410211041"), ("equipment", "MM:ABB|RIO PANEL"),
             ("spare", "PN:O-RING 1"), ("spare", "SPF:ABC-1")]

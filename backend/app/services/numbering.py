@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import MaterialNumber, NumberSequence, material_master_import as master
+from .bom_builder import description_key
 
 EQUIPMENT = "EQUIPMENT"
 SPARE = "SPARE"
@@ -70,9 +71,18 @@ class DbAllocator:
     def _master_number(self, kind: str, key: str) -> int | None:
         """Temp number already in the master for this item - only from rows of the same plant + project.
         Part numbers for equipment and spares, SAP / SPF numbers for spares without a part number. The lowest
-        number wins, so a real 4xxxx / 5xxxxx number beats an SAP number."""
+        number wins, so a real 4xxxx / 5xxxxx number beats an SAP number. PNDESC (part number used with several
+        descriptions): part number and description must both match."""
         prefix, _, value = key.partition(":")
         temp = master.c.material_temp_number
+        if prefix == "PNDESC":  # part number + description: the description is compared as in description_key()
+            pn, _, desc = value.partition("|")
+            column = func.upper(func.regexp_replace(func.trim(master.c.manufacturers_part_number), r"\s+", " ", "g"))
+            rows = self.db.execute(
+                select(temp, master.c.material_description)
+                .where(*self._master_rows(kind), column == pn, temp.is_not(None)).order_by(temp)
+            ).all()
+            return next((t for t, d in rows if description_key(d) == desc), None)
         if prefix == "PN":
             column = func.upper(func.regexp_replace(func.trim(master.c.manufacturers_part_number), r"\s+", " ", "g"))
         elif kind == SPARE and prefix in ("SAP", "SPF"):

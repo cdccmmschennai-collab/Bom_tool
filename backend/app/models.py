@@ -62,7 +62,7 @@ class MaterialNumber(Base):
     kind: Mapped[str] = mapped_column(String(10))
     # scope = "<plant>|<PROJECT>": a number is reused only within the same plant + project
     # PN:<part number> / MESC:<number> / MM:<make>|<model> / CABINET(Q):<hash> / TAG:<tag> for equipment,
-    # PN:, SAP:, SPF:, DESC: for spares
+    # PN:, PNDESC:<part number>|<description> (part number with several descriptions), SAP:, SPF:, DESC: for spares
     item_key: Mapped[str] = mapped_column(Text)  # a part / SAP / SPF number of any length
     temp_number: Mapped[int] = mapped_column(BigInteger)
     first_job_id: Mapped[int | None] = mapped_column(ForeignKey("conversion_jobs.id"), nullable=True)

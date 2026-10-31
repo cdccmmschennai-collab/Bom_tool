@@ -253,12 +253,13 @@ def link_serial(cell, bom: Worksheet, serial: int) -> None:
 
 
 def finish_verification(ws: Worksheet, row_count: int) -> None:
-    """Borders, wrapped reasons, frozen header row and a filter - like the other sheets, no colours."""
+    """Borders, wrapped text in every data cell, frozen header row and a filter - like the other sheets, no colours."""
     _border_table(ws, VERIFY_FIRST_DATA_ROW, row_count)
-    reason_col = _header_index(ws).get(norm_header("CHECK REASON"))
-    if reason_col:
-        for r in range(VERIFY_FIRST_DATA_ROW, VERIFY_FIRST_DATA_ROW + row_count):
-            ws.cell(r, reason_col).alignment = Alignment(wrap_text=True, vertical="top")
+    last_col = max(_header_index(ws).values())
+    for row in ws.iter_rows(min_row=VERIFY_FIRST_DATA_ROW, max_row=VERIFY_FIRST_DATA_ROW + row_count - 1,
+                            max_col=last_col):
+        for c in row:
+            c.alignment = Alignment(wrap_text=True, vertical="top")
     ws.freeze_panes = f"A{VERIFY_FIRST_DATA_ROW}"
     ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{VERIFY_FIRST_DATA_ROW + row_count - 1}"
 
