@@ -23,6 +23,9 @@ router = APIRouter(prefix="/api/jobs", tags=["conversions"])
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 COMBINE_KEEP = timedelta(hours=24)  # combined files are temporary, not part of the history
+# Project number: 1-25 printable ASCII characters (letters, digits, special characters), at least one letter or
+# digit. Spaces and '|' are not allowed: '|' separates plant and project in the numbering scope (numbering.py).
+PROJECT_NUMBER_RE = re.compile(r"(?=.*[A-Za-z0-9])[\x21-\x7B\x7D\x7E]{1,25}")
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +34,8 @@ log = logging.getLogger(__name__)
 async def create_job(
     plant_type: str = Form(..., description="DUKHAN or OTHER"),
     plant_id: int | None = Form(None, description="Maintenance planning plant (required)"),
-    project_number: str | None = Form(None, description="Project number (required, alphanumeric, max 25)"),
+    project_number: str | None = Form(None, description="Project number (required, letters/digits/special "
+                                                         "characters, no spaces or '|', max 25)"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
@@ -51,9 +55,10 @@ async def create_job(
 
     project_number = (project_number or "").strip() or None
     if not project_number:
-        raise HTTPException(422, "Project number is required (letters and digits, max 25 characters).")
-    if not re.fullmatch(r"[A-Za-z0-9]{1,25}", project_number):
-        raise HTTPException(422, "Project number must be alphanumeric, max 25 characters.")
+        raise HTTPException(422, "Project number is required (letters, digits and special characters, max 25).")
+    if not PROJECT_NUMBER_RE.fullmatch(project_number):
+        raise HTTPException(422, "Project number may contain letters, digits and special characters (no spaces "
+                                 "or '|'), must include at least one letter or digit, max 25 characters.")
 
     name = file.filename or "input.xlsx"
     if not name.lower().endswith((".xlsx", ".xlsm")):

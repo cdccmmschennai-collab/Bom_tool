@@ -77,7 +77,7 @@ class ConversionJob(Base):
     plant_type: Mapped[str] = mapped_column(String(10))
     plant_id: Mapped[int | None] = mapped_column(ForeignKey("plants.id"), nullable=True)
     plant_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
-    project_number: Mapped[str | None] = mapped_column(String(25), nullable=True)  # optional, alphanumeric
+    project_number: Mapped[str | None] = mapped_column(String(25), nullable=True)  # letters/digits/special chars (no spaces or '|')
     user_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(10))  # SUCCESS | FAILED
     error: Mapped[str | None] = mapped_column(String(2000), nullable=True)

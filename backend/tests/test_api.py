@@ -191,9 +191,16 @@ def test_numbers_reused_only_for_same_plant_and_project(client, sample_bytes):
     assert not generated(other_project) & generated(other_plant)
 
 
-def test_project_number_must_be_alphanumeric_max_25(client, sample_bytes):
-    for bad in ("AB-12", "AB 12", "A" * 26):
+def test_project_number_rejects_invalid(client, sample_bytes):
+    for bad in ("AB 12", "AB|12", "---", "PRJé", "A" * 26, "A-" * 13):
         assert upload(client, sample_bytes, "OTHER", project_number=bad).status_code == 422, bad
+
+
+def test_project_number_allows_special_characters(client, sample_bytes):
+    for good in ("AB-12", "PRJ/2026_01", "P.1#(A)&B+C", "A" * 25):
+        r = upload(client, sample_bytes, "OTHER", project_number=good)
+        assert r.status_code == 201, (good, r.text)
+        assert r.json()["project_number"] == good
 
 
 def test_api_requires_sign_in(client):

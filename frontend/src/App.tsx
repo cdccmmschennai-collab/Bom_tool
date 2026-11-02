@@ -9,6 +9,9 @@ import Settings from "./Settings";
 import { BoxIcon, ClockIcon, DownloadIcon, GearIcon, initials, LayersIcon, UploadIcon } from "./ui";
 
 const isExcel = (f: File) => /\.xls[xm]$/i.test(f.name);
+/** Project number: letters, digits and special characters; spaces, '|' and non-ASCII are stripped
+ *  (same rule as the backend — '|' separates plant and project in the numbering scope). */
+const PROJECT_NO_BLOCKED = /[^\x21-\x7B\x7D\x7E]/g;
 
 /* ------------------------------------------------------------------ plant picker (shared) */
 function PlantFields({ plants, plantId, onChange, projectNo, onProjectNoChange, disabled }: {
@@ -85,7 +88,7 @@ function PlantFields({ plants, plantId, onChange, projectNo, onProjectNoChange, 
       disabled={disabled}
       placeholder="Enter the Project Number"
       onChange={(e) =>
-        onProjectNoChange(e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 25))
+        onProjectNoChange(e.target.value.replace(PROJECT_NO_BLOCKED, "").slice(0, 25))
       }
     />
   </label>
