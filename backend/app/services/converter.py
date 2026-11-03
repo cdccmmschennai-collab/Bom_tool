@@ -40,14 +40,16 @@ def output_filename(plant_type: str, plant_code: str | None, spir_numbers: list[
 
 
 def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes, filename: str,
-            user_name: str | None, project_number: str | None = None) -> ConversionJob:
+            user_name: str | None, project_number: str | None = None,
+            user_id: int | None = None) -> ConversionJob:
     settings = get_settings()
     plant_type = plant_type.upper()
     plant_code = plant.code if plant else None
 
     job = ConversionJob(
         plant_type=plant_type, plant_id=plant.id if plant else None, plant_code=plant_code,
-        project_number=project_number, user_name=user_name, status="SUCCESS", input_filename=filename, input_file=content,
+        project_number=project_number, user_name=user_name, user_id=user_id, status="SUCCESS", input_filename=filename,
+        input_file=content,
     )
     try:
         rows = read_input(content)
@@ -85,7 +87,7 @@ def convert(db: Session, *, plant_type: str, plant: Plant | None, content: bytes
         log.exception("Conversion failed for %s", filename)
         failed = ConversionJob(
             plant_type=plant_type, plant_id=plant.id if plant else None, plant_code=plant_code,
-            project_number=project_number, user_name=user_name, status="FAILED", error=str(exc)[:2000],
+            project_number=project_number, user_name=user_name, user_id=user_id, status="FAILED", error=str(exc)[:2000],
             input_filename=filename, input_file=content,
         )
         saved = ""

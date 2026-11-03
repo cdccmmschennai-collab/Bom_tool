@@ -79,6 +79,8 @@ class ConversionJob(Base):
     plant_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     project_number: Mapped[str | None] = mapped_column(String(25), nullable=True)  # letters/digits/special chars (no spaces or '|')
     user_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # owner: the History page lists only the signed-in user's conversions (NULL = owner unknown, shown to nobody)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(10))  # SUCCESS | FAILED
     error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
@@ -172,6 +174,7 @@ class CombineTask(Base):
     kind: Mapped[str] = mapped_column(String(10))       # WORKING | SUBMISSION
     job_ids: Mapped[list] = mapped_column(JSONB)
     user_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)  # owner
     status: Mapped[str] = mapped_column(String(10))     # RUNNING | DONE | FAILED
     done: Mapped[int] = mapped_column(Integer, default=0)
     total: Mapped[int] = mapped_column(Integer)

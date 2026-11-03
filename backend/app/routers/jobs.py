@@ -76,7 +76,7 @@ async def create_job(
     try:
         return convert(db, plant_type=plant_type, plant=plant, content=content, filename=name,
                        user_name=user.display_name,  # history shows the signed-in user
-                       project_number=project_number)
+                       project_number=project_number, user_id=user.id)
     except (InputFileError, TemplateError) as exc:
         raise HTTPException(422, str(exc)) from exc
     except ConversionFailed as exc:
@@ -91,8 +91,9 @@ def list_jobs(
     date_from: datetime | None = Query(None, description="Created at or after (ISO 8601)"),
     date_to: datetime | None = Query(None, description="Created before (ISO 8601, exclusive)"),
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ) -> JobPage:
-    q = select(ConversionJob)
+    q = select(ConversionJob).where(ConversionJob.user_id == user.id)  # each user sees only their own history
     if search:
         like = f"%{search.strip()}%"
         q = q.where(ConversionJob.input_filename.ilike(like) | ConversionJob.output_filename.ilike(like)
@@ -140,7 +141,8 @@ def start_combine(body: CombineIn, background: BackgroundTasks, db: Session = De
     ids = list(dict.fromkeys(body.job_ids))  # drop repeated ids, keep the order
     if len(ids) < 2:
         raise HTTPException(422, "Select at least two conversions to combine.")
-    jobs = {j.id: j for j in db.execute(select(ConversionJob).where(ConversionJob.id.in_(ids))).scalars()}
+    jobs = {j.id: j for j in db.execute(select(ConversionJob).where(
+        ConversionJob.id.in_(ids), ConversionJob.user_id == user.id)).scalars()}  # another user's = not found
     if missing := [i for i in ids if i not in jobs]:
         raise HTTPException(404, f"Conversion(s) not found: {', '.join(map(str, missing))}.")
     if failed := [i for i in ids if jobs[i].status != "SUCCESS"]:
@@ -155,7 +157,8 @@ def start_combine(body: CombineIn, background: BackgroundTasks, db: Session = De
     db.execute(delete(CombineTask).where(CombineTask.created_at < datetime.now(timezone.utc) - COMBINE_KEEP))
     label = "DUKHAN" if jobs[ids[0]].plant_type == "DUKHAN" else "OTHER_PLANT"
     task = CombineTask(
-        kind=body.kind, job_ids=ids, user_name=user.display_name, status="RUNNING", done=0, total=len(ids),
+        kind=body.kind, job_ids=ids, user_name=user.display_name, user_id=user.id, status="RUNNING", done=0,
+        total=len(ids),
         filename=f"BOM_{body.kind}_TEMPLATE_COMBINED_{label}_{len(ids)}_FILES_{datetime.now():%Y%m%d-%H%M}.xlsx",
     )
     db.add(task)
@@ -165,38 +168,46 @@ def start_combine(body: CombineIn, background: BackgroundTasks, db: Session = De
 
 
 @router.get("/combine/{task_id}", response_model=CombineOut)
-def combine_status(task_id: int, db: Session = Depends(get_db)) -> CombineTask:
-    task = db.get(CombineTask, task_id)
+def combine_status(task_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> CombineTask:
+    task = db.execute(select(CombineTask).where(CombineTask.id == task_id, CombineTask.user_id == user.id)
+                      ).scalar_one_or_none()
     if task is None:
         raise HTTPException(404, "Combine request not found (combined files are kept for 24 hours).")
     return task
 
 
 @router.get("/combine/{task_id}/file")
-def combine_file(task_id: int, db: Session = Depends(get_db)) -> Response:
-    task = db.execute(select(CombineTask).where(CombineTask.id == task_id)
+def combine_file(task_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
+    task = db.execute(select(CombineTask).where(CombineTask.id == task_id, CombineTask.user_id == user.id)
                       .options(undefer(CombineTask.file))).scalar_one_or_none()
     if task is None or task.status != "DONE" or not task.file:
         raise HTTPException(404, "The combined file is not available.")
     return _download(task.filename, task.file)
 
 
+def _own_job(db: Session, job_id: int, user: User, *deferred) -> ConversionJob | None:
+    """The conversion if it belongs to `user`; another user's conversion is treated as not found (404),
+    so its existence is not revealed either."""
+    return db.execute(select(ConversionJob).where(ConversionJob.id == job_id, ConversionJob.user_id == user.id)
+                      .options(*(undefer(col) for col in deferred))).scalar_one_or_none()
+
+
 @router.get("/{job_id}", response_model=JobOut)
-def get_job(job_id: int, db: Session = Depends(get_db)) -> ConversionJob:
-    job = db.get(ConversionJob, job_id)
+def get_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> ConversionJob:
+    job = _own_job(db, job_id, user)
     if job is None:
         raise HTTPException(404, "Job not found.")
     return job
 
 
 @router.delete("/{job_id}", status_code=204)
-def delete_job(job_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
     """Removes the conversion from the history (with its stored files).
 
     The temp numbers it issued stay taken: they remain in material_master_import and in the numbering
     memory, so they are never handed out to another item.
     """
-    job = db.get(ConversionJob, job_id)
+    job = _own_job(db, job_id, user)
     if job is None:
         raise HTTPException(404, "Job not found.")
     db.execute(update(MaterialNumber).where(MaterialNumber.first_job_id == job_id).values(first_job_id=None))
@@ -211,27 +222,24 @@ def _download(filename: str, content: bytes) -> Response:
 
 
 @router.get("/{job_id}/output")
-def download_output(job_id: int, db: Session = Depends(get_db)) -> Response:
-    job = db.execute(select(ConversionJob).where(ConversionJob.id == job_id)
-                     .options(undefer(ConversionJob.output_file))).scalar_one_or_none()
+def download_output(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
+    job = _own_job(db, job_id, user, ConversionJob.output_file)
     if job is None or not job.output_file:
         raise HTTPException(404, "No output file for this job.")
     return _download(job.output_filename or f"bom_{job_id}.xlsx", job.output_file)
 
 
 @router.get("/{job_id}/submission")
-def download_submission(job_id: int, db: Session = Depends(get_db)) -> Response:
-    job = db.execute(select(ConversionJob).where(ConversionJob.id == job_id)
-                     .options(undefer(ConversionJob.submission_file))).scalar_one_or_none()
+def download_submission(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
+    job = _own_job(db, job_id, user, ConversionJob.submission_file)
     if job is None or not job.submission_file:
         raise HTTPException(404, "No submission file for this job.")
     return _download(job.submission_filename or f"bom_submission_{job_id}.xlsx", job.submission_file)
 
 
 @router.get("/{job_id}/input")
-def download_input(job_id: int, db: Session = Depends(get_db)) -> Response:
-    job = db.execute(select(ConversionJob).where(ConversionJob.id == job_id)
-                     .options(undefer(ConversionJob.input_file))).scalar_one_or_none()
+def download_input(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
+    job = _own_job(db, job_id, user, ConversionJob.input_file)
     if job is None:
         raise HTTPException(404, "Job not found.")
     return _download(job.input_filename, job.input_file)

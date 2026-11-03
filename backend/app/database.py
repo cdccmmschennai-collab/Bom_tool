@@ -40,6 +40,17 @@ _ADDED_COLUMNS = [
     *(f"ALTER TABLE conversion_jobs ALTER COLUMN {col} TYPE TEXT"
       for col in ("input_filename", "output_filename", "submission_filename")),
     "ALTER TABLE material_numbers ALTER COLUMN item_key TYPE TEXT",
+    # owner of each conversion / combine run: the History page shows each user only their own records
+    *(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)"
+      for table in ("conversion_jobs", "combine_tasks")),
+    "CREATE INDEX IF NOT EXISTS ix_conversion_jobs_user_id ON conversion_jobs (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_combine_tasks_user_id ON combine_tasks (user_id)",
+    # older rows only stored the display name: link them to the user with that name, only when exactly one
+    # user has it (an ambiguous or unknown name stays NULL - better hidden than shown to the wrong user)
+    *(f"UPDATE {table} t SET user_id = u.id FROM users u "
+      f"WHERE t.user_id IS NULL AND t.user_name = COALESCE(u.full_name, u.username) "
+      f"AND (SELECT count(*) FROM users x WHERE COALESCE(x.full_name, x.username) = t.user_name) = 1"
+      for table in ("conversion_jobs", "combine_tasks")),
 ]
 
 

@@ -408,3 +408,25 @@ def test_unexpected_error_has_a_readable_message(client, sample_bytes, monkeypat
     assert "Unexpected error" in detail and "disk full" in detail
     job_id = int(re.search(r"#(\d+)", detail).group(1))
     assert client.get(f"/api/jobs/{job_id}").json()["status"] == "FAILED"
+
+
+def test_history_shows_only_own_records(client, sample_bytes, monkeypatch):
+    """Each user sees, downloads, deletes and combines only their own conversions (HYD / QAT / tester)."""
+    mine = upload(client, sample_bytes, "DUKHAN").json()  # the tester's conversion
+    make_user(monkeypatch, "hyd_user", name="HYD User")
+    with TestClient(app) as hyd:
+        assert hyd.post("/api/auth/login", json={"username": "HYD_User", "password": PASSWORD}).status_code == 200
+        assert hyd.get("/api/jobs").json() == {"items": [], "total": 0}  # nothing of the tester's
+        for path in ("", "/output", "/submission", "/input"):
+            assert hyd.get(f"/api/jobs/{mine['id']}{path}").status_code == 404
+        assert hyd.delete(f"/api/jobs/{mine['id']}").status_code == 404
+
+        own = upload(hyd, sample_bytes, "DUKHAN").json()
+        assert [j["id"] for j in hyd.get("/api/jobs").json()["items"]] == [own["id"]]
+        assert hyd.get(f"/api/jobs/{own['id']}/output").status_code == 200
+        r = hyd.post("/api/jobs/combine", json={"job_ids": [own["id"], mine["id"]], "kind": "WORKING"})
+        assert r.status_code == 404  # cannot pull the tester's file into a combine
+
+    tester_ids = [j["id"] for j in client.get("/api/jobs", params={"limit": 200}).json()["items"]]
+    assert mine["id"] in tester_ids and own["id"] not in tester_ids
+    assert client.get(f"/api/jobs/{own['id']}/output").status_code == 404
